@@ -1,8 +1,6 @@
 const encode = new TextEncoder();
-// Set from secrets OR_TORAH_GATE_CODE / OR_TORAH_GATE_KEY at the start of each request.
-let gateCode = "";
+// Signing key, set from the OR_TORAH_GATE_KEY secret at the start of each request.
 let gateKey = "";
-const gateCookie = "__Host-or_torah_gate";
 const adminCookie = "__Host-or_torah_admin";
 const gateLifetime = 7 * 86400;
 const accessEmail = "Yoelassuid@gmail.com";
@@ -142,7 +140,7 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .danger-zone summary { color: var(--bad); }
 .danger-zone form { margin-block-start: 10px; }
 label.check { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-input[type=checkbox] { width: 22px; height: 22px; min-height: 0; accent-color: var(--gold); flex: none; }
+input[type=checkbox], input[type=radio] { width: 22px; height: 22px; min-height: 0; accent-color: var(--gold); flex: none; }
 .row-menu summary { cursor: pointer; color: var(--muted); font-size: .9rem; padding: 6px 4px; }
 .row-menu { grid-column: 1 / -1; }
 .row-menu[open] { padding-block-start: 6px; border-top: 1px solid var(--line); }
@@ -201,24 +199,6 @@ const hash = async (input) => hex(await crypto.subtle.digest("SHA-256", encode.e
 
 const brandHtml = '<a class="brand" href="/"><span class="brand-mark" aria-hidden="true">א</span>אור תורה</a>';
 
-function gatePage(error = false) {
-  return new Response(`<!doctype html>
-<html lang="he" dir="rtl">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="ספריית שיעורי הרב נתן רוטמן בעברית.">
-<title>שיעורי הרב נתן רוטמן | אור תורה</title><link rel="stylesheet" href="/style.css"></head>
-<body><header class="header"><div class="shell nav">${brandHtml}
-<nav class="nav-links" aria-label="ניווט ראשי"><a class="button gold" href="${mailLink}">בקשת גישה</a></nav></div></header>
-<main class="shell page-main"><div class="gate-shell"><section><h1>שיעורי<strong>הרב נתן רוטמן</strong></h1><p>ספריית שיעורי תורה לצפייה, להאזנה ולהורדה.</p></section>
-<section class="gate-card" aria-labelledby="gate-title"><h2 id="gate-title">כניסה לשיעורים</h2>
-<form action="/access/code" method="post"><label for="course-code">קוד גישה</label><input id="course-code" type="password" name="code" inputmode="numeric" autocomplete="current-password" maxlength="4" placeholder="••••" dir="ltr" required>
-${error ? '<p class="gate-error" role="alert">קוד הגישה שגוי. נסו שוב.</p>' : ''}<button class="button gold" type="submit">כניסה</button></form>
-<p style="margin-block:16px 0">אין לכם קוד? <a href="${mailLink}">בקשת גישה בדוא״ל</a></p></section></div></main>${siteFooter}</body></html>`, {
-    status: error ? 401 : 200,
-    headers: { ...security, "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
-  });
-}
-
 async function gateSignature(value, signature) {
   const key = await crypto.subtle.importKey("raw", encode.encode(gateKey), {name: "HMAC", hash: "SHA-256"}, false, ["sign", "verify"]);
   if (signature) {
@@ -228,32 +208,108 @@ async function gateSignature(value, signature) {
   return hex(await crypto.subtle.sign("HMAC", key, encode.encode(value)));
 }
 
-async function gateAuthorized(request, origin) {
-  const cookie = request.headers.get("Cookie")?.split(/;\s*/).find(part => part.startsWith(gateCookie + "="));
-  const value = cookie?.slice(gateCookie.length + 1);
-  const match = /^(\d{10})\.([a-f0-9]{64})$/.exec(value ?? "");
-  return Boolean(match && Number(match[1]) > Math.floor(Date.now() / 1000) && await gateSignature(`${origin}:${match[1]}`, match[2]));
-}
-
-async function enterGate(request, origin) {
-  if (request.headers.get("Origin") !== origin) return new Response(null, {status: 403, headers: security});
-  if (Number(request.headers.get("Content-Length")) > 1024) return new Response(null, {status: 413, headers: security});
-  const form = await request.formData().catch(() => null);
-  if (form?.get("code") !== gateCode) return gatePage(true);
-  const expires = Math.floor(Date.now() / 1000) + gateLifetime;
-  const signed = await gateSignature(`${origin}:${expires}`);
-  return new Response(null, {status: 303, headers: {
-    ...security, Location: "/",
-    "Set-Cookie": `${gateCookie}=${expires}.${signed}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${gateLifetime}`
-  }});
-}
-
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]);
 }
 
 const esc = escapeHtml;
 const redirect = (location) => new Response(null, {status:303, headers:{...security, Location:location}});
+let schemaReady = false;
+async function ensureSchema(env) {
+  if (schemaReady) return;
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS category_access (folder TEXT PRIMARY KEY, mode TEXT NOT NULL, code_hash TEXT)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS category_attempts (k TEXT PRIMARY KEY, period INTEGER NOT NULL, tries INTEGER NOT NULL)")
+  ]);
+  schemaReady = true;
+}
+
+async function accessRules(env) {
+  const {results} = await env.DB.prepare("SELECT folder, mode, code_hash FROM category_access").all();
+  return new Map(results.map(row => [row.folder, row]));
+}
+
+const categoryHash = (folder, code) => gateSignature(`category:${folder}:${code}`);
+const categoryCookieName = async folder => "__Host-ot_c_" + (await hash(folder)).slice(0, 16);
+
+async function categoryOpen(request, origin, rule, folder) {
+  if (!rule) return false;
+  if (rule.mode === "public") return true;
+  if (!rule.code_hash) return false;
+  const name = await categoryCookieName(folder);
+  const value = request.headers.get("Cookie")?.split(/;\s*/).find(part => part.startsWith(name + "="))?.slice(name.length + 1);
+  const m = /^(\d{10})\.([a-f0-9]{64})$/.exec(value ?? "");
+  return Boolean(m && Number(m[1]) > Math.floor(Date.now() / 1000) && await gateSignature(`cat:${origin}:${folder}:${rule.code_hash}:${m[1]}`, m[2]));
+}
+
+function codePrompt(folder, error = "", status = 200) {
+  return layout(folder, `<div class="panel stack">${error ? notice(error, "error") : ""}<p>קטגוריה זו מוגנת בקוד.</p>
+    <form class="form-grid" method="post" action="/access/category"><input type="hidden" name="folder" value="${esc(folder)}">
+    <label>קוד גישה<input type="password" name="code" autocomplete="off" maxlength="12" dir="ltr" required></label>
+    <button class="button gold">כניסה</button></form>
+    <p style="margin-block:16px 0">אין לכם קוד? <a href="${mailLink}">בקשת גישה בדוא״ל</a></p></div>`, status,
+    {before: '<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a></nav>'});
+}
+
+async function enterCategory(request, env, url) {
+  if (request.headers.get("Origin") !== url.origin) return new Response(null, {status: 403, headers: security});
+  if (Number(request.headers.get("Content-Length")) > 1024) return new Response(null, {status: 413, headers: security});
+  const form = await request.formData().catch(() => null);
+  const folder = String(form?.get("folder") ?? "");
+  const code = String(form?.get("code") ?? "");
+  const rule = (await accessRules(env)).get(folder);
+  if (!rule || rule.mode !== "code" || !rule.code_hash) return layout("התיקייה לא נמצאה", '<a href="/">חזרה לספרייה</a>', 404);
+  const key = await hash((request.headers.get("CF-Connecting-IP") ?? "") + "|" + folder);
+  const period = Math.floor(Date.now() / 900000);
+  const limit = await env.DB.prepare(`INSERT INTO category_attempts (k,period,tries) VALUES (?,?,1)
+    ON CONFLICT(k) DO UPDATE SET tries=CASE WHEN period=excluded.period THEN tries+1 ELSE 1 END, period=excluded.period
+    WHERE period<>excluded.period OR tries<8 RETURNING tries`).bind(key, period).first();
+  if (!limit) return codePrompt(folder, "יותר מדי ניסיונות. נסו שוב בעוד כמה דקות.", 429);
+  if (await categoryHash(folder, code) !== rule.code_hash) return codePrompt(folder, "קוד הגישה שגוי.", 401);
+  await env.DB.prepare("DELETE FROM category_attempts WHERE k = ?").bind(key).run();
+  const expires = Math.floor(Date.now() / 1000) + gateLifetime;
+  const sig = await gateSignature(`cat:${url.origin}:${folder}:${rule.code_hash}:${expires}`);
+  return new Response(null, {status: 303, headers: {...security, Location: backblazeCourseLink(folder),
+    "Set-Cookie": `${await categoryCookieName(folder)}=${expires}.${sig}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${gateLifetime}`}});
+}
+
+async function saveCategoryAccess(request, env) {
+  if (Number(request.headers.get("Content-Length")) > 4096) return json("בקשה גדולה מדי", 413);
+  const form = await request.formData().catch(() => null);
+  const folder = String(form?.get("folder") ?? "").trim();
+  const mode = form?.get("mode");
+  const code = String(form?.get("code") ?? "").trim();
+  const bad = text => layout("לא ניתן לשמור", notice(text, "error") + '<p><a class="button" href="/admin">חזרה לניהול</a></p>', 400, {admin: true});
+  if (!folder || folder === "." || folder === ".." || folder.length > 120 || /[/\\\x00-\x1f\x7f]/.test(folder)) return bad("שם הקטגוריה אינו תקין.");
+  if (mode !== "public" && mode !== "code") return bad("יש לבחור ציבורית או מוגנת בקוד.");
+  if (code && !/^\S{4,12}$/.test(code)) return bad("הקוד חייב להכיל 4 עד 12 תווים, בלי רווחים.");
+  const current = await env.DB.prepare("SELECT code_hash FROM category_access WHERE folder = ?").bind(folder).first();
+  let codeHash = null;
+  if (mode === "code") {
+    codeHash = code ? await categoryHash(folder, code) : current?.code_hash ?? null;
+    if (!codeHash) return bad("יש להגדיר קוד לקטגוריה מוגנת.");
+  }
+  await env.DB.prepare("INSERT INTO category_access (folder, mode, code_hash) VALUES (?,?,?) ON CONFLICT(folder) DO UPDATE SET mode=excluded.mode, code_hash=excluded.code_hash").bind(folder, mode, codeHash).run();
+  return redirect(adminHref({folder, saved: 1}));
+}
+
+function accessStatus(rule) {
+  return !rule ? ["לא הוגדרה", "warn", "לא הוגדרה: הקטגוריה מוסתרת מהאתר"]
+    : rule.mode === "public" ? ["ציבורית", "ok", "ציבורית: פתוחה לכולם"] : ["בקוד", "", "מוגנת בקוד"];
+}
+
+function accessPanel(folder, rule) {
+  const mode = rule?.mode ?? "";
+  return `<details class="help"${rule ? "" : " open"}><summary>גישה לקטגוריה · ${accessStatus(rule)[2]}</summary>
+    <form class="form-grid" method="post" action="/admin/category-access" style="margin-block-start:14px"><input type="hidden" name="folder" value="${esc(folder)}">
+    <label class="check"><input type="radio" name="mode" value="public"${mode === "public" ? " checked" : ""} required> ציבורית (פתוחה לכולם)</label>
+    <label class="check"><input type="radio" name="mode" value="code"${mode === "code" ? " checked" : ""}> מוגנת בקוד</label>
+    <label>קוד לקטגוריה (4 עד 12 תווים)<input name="code" maxlength="12" dir="ltr" autocomplete="off" placeholder="${rule?.mode === "code" ? "השאירו ריק כדי לשמור את הקוד הנוכחי" : ""}"></label>
+    <button class="button gold">שמירה</button></form></details>`;
+}
+
+const addCategoryPanel = '<details class="help"><summary>+ הוספת קטגוריה חדשה</summary><form class="form-grid" method="post" action="/admin/category-access" style="margin-block-start:14px"><label>שם הקטגוריה<input name="folder" maxlength="120" required></label><label class="check"><input type="radio" name="mode" value="public" required> ציבורית (פתוחה לכולם)</label><label class="check"><input type="radio" name="mode" value="code"> מוגנת בקוד</label><label>קוד לקטגוריה (4 עד 12 תווים, אם מוגנת)<input name="code" maxlength="12" dir="ltr" autocomplete="off"></label><p>אחרי היצירה, העלו את השיעורים לתיקייה בעלת אותו שם ב־Backblaze, או דרך ״הוספת שיעור״.</p><button class="button gold">יצירת הקטגוריה</button></form></details>';
+
 function layout(title, content, status = 200, opts = {}) {
   const logout = '<form method="post" action="/admin/logout"><button class="nav-link">יציאה</button></form>';
   const nav = opts.admin
@@ -372,6 +428,7 @@ async function admin(request, env, url) {
   }
   if (route === "/admin/course-visibility" && request.method === "POST") return setCourseVisibility(request, env);
   if (route === "/admin/backblaze-upload" && request.method === "POST") return addBackblazeCourse(request, env);
+  if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
   return json("פעולה לא זמינה", 405);
@@ -635,15 +692,20 @@ async function backblazeAdmin(env, url) {
   const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. שיעור בלי MP4 מסומן ״חסר MP4״.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
+    (url.searchParams.has("saved") ? notice("הגדרות הגישה נשמרו.") : "") +
     ({hide: notice("השיעור הוסתר מהספרייה."), restore: notice("השיעור הוחזר לספרייה.")}[url.searchParams.get("visibility")] ?? "");
   try {
     const storage = await backblaze(env);
-    const folders = await backblazeFolders(storage);
-    if (!folders.includes(current)) {
-      const cards = folders.map(folder => `<li><a class="folder-card" href="${esc(adminHref({folder}))}">${folderIcon}<span class="folder-name">${esc(folder)}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`).join("");
+    const rules = await accessRules(env);
+    const known = [...new Set([...await backblazeFolders(storage), ...rules.keys()])].sort((a, b) => a.localeCompare(b, "he"));
+    if (!known.includes(current)) {
+      const cards = known.map(folder => {
+        const [label, tone] = accessStatus(rules.get(folder));
+        return `<li><a class="folder-card" href="${esc(adminHref({folder}))}">${folderIcon}<span class="folder-name">${esc(folder)}</span><span class="badge ${tone}">${label}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`;
+      }).join("");
       return layout("ניהול הספרייה", flash + actions +
-        `<div class="stats"><div class="stat"><b>${folders.length}</b><span>קטגוריות</span></div><div class="stat"><b>${uploadReady(env) ? "פעילה" : "כבויה"}</b><span>העלאה מהאתר</span></div></div>
-        <h2>הקטגוריות</h2>${cards ? `<ul class="folder-grid">${cards}</ul>` : '<div class="panel empty-state"><p>עדיין אין קטגוריות. צרו תיקייה ב־Backblaze או הוסיפו שיעור.</p></div>'}` + howTo, 200, {admin: true});
+        `<div class="stats"><div class="stat"><b>${known.length}</b><span>קטגוריות</span></div><div class="stat"><b>${uploadReady(env) ? "פעילה" : "כבויה"}</b><span>העלאה מהאתר</span></div></div>
+        <h2>הקטגוריות</h2>${cards ? `<ul class="folder-grid">${cards}</ul>` : '<div class="panel empty-state"><p>עדיין אין קטגוריות. הוסיפו קטגוריה חדשה למטה.</p></div>'}` + addCategoryPanel + howTo, 200, {admin: true});
     }
     const q = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
     const onlyMissing = url.searchParams.get("missing") === "1";
@@ -660,7 +722,7 @@ async function backblazeAdmin(env, url) {
     const pageHref = n => esc(adminHref({folder: current, q, ...(onlyMissing ? {missing: 1} : {}), page: n}));
     const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
     const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
-    return layout(current, flash + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + `
+    return layout(current, flash + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + accessPanel(current, rules.get(current)) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat${missing ? " warn" : ""}"><b>${missing}</b><span>חסר MP4</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${onlyMissing ? '<input type="hidden" name="missing" value="1">' : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !onlyMissing)}${chip(`חסר MP4 (${missing})`, {q, missing: 1}, onlyMissing)}</div>
@@ -674,10 +736,14 @@ async function backblazeAdmin(env, url) {
 
 async function b2Catalogue(request, env, url) {
   const storage = await backblaze(env);
+  const rules = await accessRules(env);
+  const open = folder => categoryOpen(request, url.origin, rules.get(folder), folder);
   const category = url.searchParams.get("folder") ?? "";
   const courseId = url.searchParams.get("course");
   const medium = url.searchParams.get("file");
   if (category.includes("/")) return layout("התיקייה לא נמצאה", "", 404);
+  if (category && !rules.has(category)) return medium && courseId ? json("הקובץ לא נמצא", 404) : layout("התיקייה לא נמצאה", '<a href="/">חזרה לספרייה</a>', 404);
+  if (category && !await open(category)) return medium && courseId ? json("אין גישה", 403) : codePrompt(category);
   if (courseId && category) {
     const hidden = await env.DB.prepare("SELECT 1 FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(category, courseId).first();
     if (hidden) return medium ? json("הקובץ לא נמצא", 404) : layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
@@ -703,12 +769,16 @@ async function b2Catalogue(request, env, url) {
       </div>`, 200, {before: crumbs});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
-  const folders = await backblazeFolders(storage);
+  const folders = (await backblazeFolders(storage)).filter(folder => rules.has(folder));
   const searchForm = (withSelect) => `<form method="get" role="search" class="searchbar${withSelect ? " with-select" : ""}"><label>חיפוש שיעור<input type="search" name="q" maxlength="120" placeholder="שם השיעור" value="${esc(query)}"></label>${withSelect
     ? `<label>קטגוריה<select name="folder"><option value="">כל הקטגוריות</option>${folders.map(folder => `<option value="${esc(folder)}"${folder === category ? " selected" : ""}>${esc(folder)}</option>`).join("")}</select></label>`
     : ""}<button class="button gold">חיפוש</button></form>`;
   if (!category && !query) {
-    const cards = folders.map(folder => `<li><a class="folder-card" href="${esc(backblazeCourseLink(folder))}">${folderIcon}<span class="folder-name">${esc(folder)}</span><span aria-hidden="true" class="folder-arrow">‹</span></a></li>`).join("");
+    let cards = "";
+    for (const folder of folders) {
+      const locked = rules.get(folder).mode === "code" && !await open(folder);
+      cards += `<li><a class="folder-card" href="${esc(backblazeCourseLink(folder))}">${folderIcon}<span class="folder-name">${esc(folder)}</span>${locked ? '<span class="badge muted">בקוד</span>' : ""}<span aria-hidden="true" class="folder-arrow">‹</span></a></li>`;
+    }
     return layout("שיעורי הרב נתן רוטמן", `<section class="hero"><h1>שיעורי<strong>הרב נתן רוטמן</strong></h1><p>צפייה, האזנה והורדה של השיעורים, מסודרים לפי נושאים.</p></section>${searchForm(false)}<h2 style="margin-block-start:8px">נושאים</h2>` + (cards
       ? `<ul class="folder-grid">${cards}</ul>`
       : '<div class="panel empty-state"><p>עדיין אין קטגוריות בספרייה.</p></div>'), 200, {heading: false});
@@ -721,6 +791,7 @@ async function b2Catalogue(request, env, url) {
   const hidden = new Set(hiddenRows.map(row => JSON.stringify([row.folder, row.course_id])));
   const rows = [];
   for (const folder of category ? [category] : folders) {
+    if (!category && !await open(folder)) continue;
     const {courses} = await planImport(folder, storage);
     for (const {code, title, video} of courses) {
       if (!hidden.has(JSON.stringify([folder, code])) && title.toLowerCase().includes(query.toLowerCase())) {
@@ -746,21 +817,19 @@ async function b2Catalogue(request, env, url) {
 
 export default {
   async fetch(request, env) {
-    gateCode = String(env.OR_TORAH_GATE_CODE ?? "");
     gateKey = String(env.OR_TORAH_GATE_KEY ?? "");
-    if (!gateCode || gateKey.length < 16) return new Response("Site not configured", {status: 503, headers: security});
+    if (gateKey.length < 16) return new Response("Site not configured", {status: 503, headers: security});
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === "/style.css") return new Response(siteStyles, {headers:{"Content-Type":"text/css; charset=utf-8", "Cache-Control":"no-cache"}});
+    await ensureSchema(env);
     if (path === "/admin" || path.startsWith("/admin/")) {
       const response = await admin(request, env, url);
       response.headers.set("X-Robots-Tag", "noindex, nofollow");
       return response;
     }
-    if (path === "/access/code" && request.method === "POST") return enterGate(request,url.origin);
-    if (path === "/access") return gatePage();
+    if (path === "/access/category" && request.method === "POST") return enterCategory(request, env, url);
     if (path !== "/") return layout("העמוד לא נמצא",'<a href="/">חזרה לספרייה</a>',404);
-    if (!await gateAuthorized(request,url.origin)) return gatePage();
     if (!["GET", "HEAD"].includes(request.method)) return new Response(null, {status: 405, headers: {Allow: "GET, HEAD"}});
     if (!(backblazeKeyId(env) && env.B2_APPLICATION_KEY)) return layout("הספרייה אינה זמינה כרגע", "", 503);
     try {
