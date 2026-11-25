@@ -315,9 +315,10 @@ function layout(title, content, status = 200, opts = {}) {
   const nav = opts.admin
     ? `<a class="nav-link" href="/admin">ניהול</a><a class="nav-link" href="/admin?add=1">הוספת שיעור</a><a class="nav-link" href="/">לאתר</a>${logout}`
     : opts.bare ? "" : '<a class="nav-link" href="/">הספרייה</a>';
+  const script = opts.script ? `<script src="${opts.script}" defer></script>` : "";
   const heading = opts.heading === false ? "" : `<h1>${esc(title)}</h1>`;
-  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | אור תורה</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}</body></html>`,
-  {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
+  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | אור תורה</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}${script}</body></html>`,
+  {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + (opts.script ? "; script-src 'self'; connect-src 'self' https://*.backblaze.com https://*.backblazeb2.com" : "")}});
 }
 
 const notice = (text, type = "ok") => `<p class="notice ${type}" role="${type === "error" ? "alert" : "status"}">${esc(text)}</p>`;
@@ -428,6 +429,7 @@ async function admin(request, env, url) {
   }
   if (route === "/admin/course-visibility" && request.method === "POST") return setCourseVisibility(request, env);
   if (route === "/admin/backblaze-upload" && request.method === "POST") return addBackblazeCourse(request, env);
+  if (route === "/admin/upload-url" && request.method === "POST") return prepareUpload(request, env);
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
@@ -483,6 +485,10 @@ async function backblaze(env, writing = false) {
       await response.body?.cancel().catch(() => {});
       if (!response.ok) throw new Error("delete-file-" + status);
     },
+    async uploadTarget() {
+      const {uploadUrl, authorizationToken: token} = await getUploadEndpoint();
+      return {uploadUrl, token};
+    },
     async upload(file, key, type) {
       const {uploadUrl, authorizationToken: uploadToken} = await getUploadEndpoint();
       const bytes = await file.arrayBuffer();
@@ -490,7 +496,7 @@ async function backblaze(env, writing = false) {
       const response = await fetch(uploadUrl, {
         method: "POST", body: bytes, redirect: "manual",
         headers: {Authorization: uploadToken, "Content-Type": type,
-          "X-Bz-Content-Sha1": checksum, "X-Bz-File-Name": encodeURIComponent(key)}
+          "X-Bz-Content-Sha1": checksum, "X-Bz-File-Name": key.split("/").map(encodeURIComponent).join("/")}
       });
       const status = response.status;
       await response.body?.cancel().catch(() => {});
@@ -566,7 +572,7 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
   return layout("הוספת שיעור", `<div class="panel stack">
     ${error ? notice(error, "error") : ""}
     ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה. בינתיים ניתן להעלות ישירות ל־Backblaze.", "info")}
-    <form class="form-grid" action="/admin/backblaze-upload" method="post" enctype="multipart/form-data">
+    <form class="form-grid" action="/admin/backblaze-upload" method="post" enctype="multipart/form-data" data-direct-upload>
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
         <input type="hidden" name="upload_id" value="${crypto.randomUUID()}">
         <label>כותרת השיעור<input name="title" maxlength="180" required></label>
@@ -574,12 +580,107 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
         <label>או קטגוריה חדשה<input name="new_folder" maxlength="120" placeholder="שם הקטגוריה החדשה"></label>
         <label>קובץ שמע MP3<input type="file" name="audio" accept=".mp3,audio/mpeg" required></label>
         <label>קובץ וידאו MP4 (אפשר להוסיף אחר כך)<input type="file" name="video" accept=".mp4,video/mp4"></label>
-        <p>עד 30MB בסך הכול. לקבצים גדולים או להעלאה של הרבה שיעורים, השתמשו בהעלאה ישירה ל־Backblaze.</p>
+        <progress data-progress hidden max="100" value="0" style="width:100%"></progress><p data-status role="status" hidden></p>
+        <p>אפשר להעלות קבצים גדולים. ההעלאה נשלחת ישירות ל־Backblaze: השאירו את המסך דלוק עד שהיא מסתיימת. להעלאה של הרבה שיעורים, השתמשו ב־rclone.</p>
         <button class="button gold">פרסום השיעור</button>
       </fieldset>
     </form>
     ${enabled ? `<p style="margin-block:16px 0"><a href="/admin?add=1&amp;check=1">בדיקת החיבור להעלאה</a>${check ? ` · <span role="status" dir="auto">${esc(check)}</span>` : ""}</p>` : ""}
-  </div>`, status, {admin: true});
+  </div>`, status, {admin: true, script: "/upload.js"});
+}
+
+const uploadScript = `(() => {
+  const form = document.querySelector("form[data-direct-upload]");
+  if (!form) return;
+  const bar = form.querySelector("[data-progress]");
+  const status = form.querySelector("[data-status]");
+  const button = form.querySelector("button.gold");
+  const note = (text, kind) => { status.textContent = text; status.className = "notice" + (kind ? " " + kind : ""); status.hidden = !text; };
+  const encodeName = name => name.split("/").map(encodeURIComponent).join("/");
+  const mb = bytes => (bytes / 1048576).toFixed(0) + "MB";
+  const send = (target, file, progress) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", target.uploadUrl);
+    xhr.setRequestHeader("Authorization", target.token);
+    xhr.setRequestHeader("X-Bz-File-Name", encodeName(target.fileName));
+    xhr.setRequestHeader("Content-Type", target.contentType);
+    xhr.setRequestHeader("X-Bz-Content-Sha1", "do_not_verify");
+    xhr.upload.onprogress = event => progress(event.loaded);
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("HTTP " + xhr.status));
+    xhr.onerror = () => reject(new Error("network"));
+    xhr.send(file);
+  });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const audio = data.get("audio");
+    const video = data.get("video");
+    const title = String(data.get("title") || "").trim();
+    const folder = String(data.get("new_folder") || "").trim() || String(data.get("folder") || "").trim();
+    if (!title || !folder) return note("יש למלא כותרת ולבחור קטגוריה.", "error");
+    if (!audio || !audio.size) return note("יש לבחור קובץ MP3.", "error");
+    const files = [{kind: "audio", file: audio}];
+    if (video && video.size) files.unshift({kind: "video", file: video});
+    button.disabled = true;
+    window.onbeforeunload = () => "ההעלאה בעיצומה";
+    bar.hidden = false; bar.value = 0;
+    note("מכינים את ההעלאה…");
+    try {
+      const prepared = await fetch("/admin/upload-url", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({folder, title, upload_id: data.get("upload_id"), files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})
+      });
+      const plan = await prepared.json().catch(() => ({}));
+      if (!prepared.ok) throw new Error(plan.message || "prepare");
+      const total = files.reduce((sum, item) => sum + item.file.size, 0);
+      let done = 0;
+      for (const item of files) {
+        const target = plan.files.find(entry => entry.kind === item.kind);
+        note((item.kind === "video" ? "מעלים MP4" : "מעלים MP3") + " (" + mb(item.file.size) + ")… השאירו את המסך דלוק.");
+        await send(target, item.file, loaded => { bar.value = Math.round(((done + loaded) / total) * 100); });
+        done += item.file.size;
+      }
+      window.onbeforeunload = null;
+      location.href = "/admin?" + new URLSearchParams({folder, published: "1"});
+    } catch (error) {
+      window.onbeforeunload = null;
+      button.disabled = false;
+      note(error.message === "network"
+        ? "ההעלאה נכשלה. ייתכן ש־CORS לא הוגדר בדלי ב־Backblaze, או שהחיבור נותק."
+        : "ההעלאה נכשלה: " + error.message, "error");
+    }
+  });
+})();
+`;
+
+const validUploadName = (value, max) => typeof value === "string" && value && value !== "." && value !== ".." && value.length <= max && !/[/\\\x00-\x1f\x7f]/.test(value);
+
+async function prepareUpload(request, env) {
+  if (!uploadReady(env)) return json("העלאה מהאתר דורשת הרשאת כתיבה ל־Backblaze.", 503);
+  if (Number(request.headers.get("Content-Length")) > 8192) return json("בקשה גדולה מדי", 413);
+  const body = await request.json().catch(() => null);
+  const folder = String(body?.folder ?? "").trim();
+  const title = String(body?.title ?? "").trim();
+  const id = String(body?.upload_id ?? "");
+  const items = Array.isArray(body?.files) ? body.files : [];
+  const limit = 4.5 * 1024 ** 3;
+  const kinds = new Set(items.map(item => item?.kind));
+  const valid = items.length >= 1 && items.length <= 2 && kinds.size === items.length && kinds.has("audio") &&
+    items.every(item => (item.kind === "audio" || item.kind === "video") && Number.isFinite(item.size) && item.size > 0 && item.size <= limit &&
+      new RegExp("\\." + (item.kind === "audio" ? "mp3" : "mp4") + "$", "i").test(String(item.name ?? "")));
+  if (!validUploadName(folder, 120) || !validUploadName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) || !valid) return json("נתוני ההעלאה אינם תקינים", 400);
+  try {
+    const writer = await backblaze(env, true);
+    const files = [];
+    for (const item of items) {
+      const {uploadUrl, token} = await writer.uploadTarget();
+      const audio = item.kind === "audio";
+      files.push({kind: item.kind, uploadUrl, token, contentType: audio ? "audio/mpeg" : "video/mp4", fileName: `${folder}/${id}/${title}.${audio ? "mp3" : "mp4"}`});
+    }
+    return Response.json({files}, {headers: security});
+  } catch (error) {
+    return json("לא ניתן להכין את ההעלאה. קוד תקלה: " + writeStatus(error), 502);
+  }
 }
 
 async function addBackblazeCourse(request, env) {
@@ -822,6 +923,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === "/style.css") return new Response(siteStyles, {headers:{"Content-Type":"text/css; charset=utf-8", "Cache-Control":"no-cache"}});
+    if (path === "/upload.js") return new Response(uploadScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     await ensureSchema(env);
     if (path === "/admin" || path.startsWith("/admin/")) {
       const response = await admin(request, env, url);
