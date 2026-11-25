@@ -1,6 +1,7 @@
 const encode = new TextEncoder();
-const gateCode = "__CODE_VISITEUR__";
-const gateKey = "__OR_TORAH_GATE_KEY__";
+// Set from secrets OR_TORAH_GATE_CODE / OR_TORAH_GATE_KEY at the start of each request.
+let gateCode = "";
+let gateKey = "";
 const gateCookie = "__Host-or_torah_gate";
 const adminCookie = "__Host-or_torah_admin";
 const gateLifetime = 7 * 86400;
@@ -577,6 +578,9 @@ async function b2Catalogue(request, env, url) {
 
 export default {
   async fetch(request, env) {
+    gateCode = String(env.OR_TORAH_GATE_CODE ?? "");
+    gateKey = String(env.OR_TORAH_GATE_KEY ?? "");
+    if (!gateCode || gateKey.length < 16) return new Response("Site not configured", {status: 503, headers: security});
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === "/style.css") return new Response(siteStyles, {headers:{"Content-Type":"text/css; charset=utf-8", "Cache-Control":"no-cache"}});
