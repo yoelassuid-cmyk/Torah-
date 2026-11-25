@@ -11,74 +11,167 @@ const mailLink = `mailto:${accessEmail}?subject=${encodeURIComponent("בקשת �
 const siteStyles = `
 :root {
   color-scheme: dark;
-  --base: #253241;
-  --panel: #303f50;
-  --edge: #526174;
-  --text: #f5f1e9;
-  --muted: #c5cdd7;
-  --gold: #e5c48d;
-  --display: Georgia, "Times New Roman", serif;
+  --bg: #0e1826;
+  --bg2: #142235;
+  --surface: #182940;
+  --surface2: #1f3550;
+  --line: #2e4561;
+  --text: #f5f0e6;
+  --muted: #aebccc;
+  --gold: #d9b36c;
+  --gold2: #f1d59b;
+  --ok: #7fd1a0;
+  --warn: #f0b27a;
+  --bad: #ff9d8f;
+  --display: "Frank Ruhl Libre","David Libre",David,Georgia,"Times New Roman",serif;
+  --radius: 14px;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--base); color: var(--text); font: 16px/1.65 system-ui,Arial,sans-serif; }
-.shell { width: min(1080px, calc(100% - 48px)); margin-inline: auto; }
-.header { background: #1d2936; border-bottom: 1px solid #465466; }
-.nav { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.brand { font: 700 1.7rem var(--display); text-decoration: none; color: var(--gold); }
-a { color: var(--gold); text-underline-offset: .24em; }
-a:hover { text-decoration-thickness: 2px; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: radial-gradient(1200px 500px at 50% -150px,#1d3350 0,var(--bg) 70%) no-repeat, var(--bg); color: var(--text); font: 17px/1.7 system-ui,-apple-system,"Segoe UI",Arial,sans-serif; }
+main { flex: 1; width: 100%; }
+.shell { width: min(1040px, calc(100% - 40px)); margin-inline: auto; }
+h1,h2,h3 { font-family: var(--display); line-height: 1.25; margin: 0 0 14px; }
+h1 { font-size: clamp(2rem,6vw,3.2rem); font-weight: 700; }
+h2 { font-size: 1.45rem; margin-block-start: 30px; }
+p { color: var(--muted); margin: 0 0 14px; }
+a { color: var(--gold); text-underline-offset: .22em; }
 button,input,select { font: inherit; }
-:focus-visible { outline: 3px solid #f2d3a1; outline-offset: 3px; }
-.button { display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 9px 17px; border-radius: 8px; text-decoration: none; font-weight: 700; line-height: 1.4; }
-.button:not(.gold) { background: #3a495a; color: var(--text); }
-.gold { background: var(--gold); color: #242a30; }
-.gold:hover { background: #f3d7a9; }
-.nav .nav-link { display: none; }
-.nav .button { color: var(--gold); background: #2b3949; }
-.gate-shell {
-  background: linear-gradient(125deg,#3c4c60,#283849 57%,#293646) !important;
-  min-height: 402px;
-  box-shadow: 0 18px 45px #141e2c55;
-}
-.gate-shell h1 { line-height: 1.14 !important; }
-.gate-shell h1 strong { color: var(--gold); }
-.gate-card { background: #263443 !important; box-shadow: 0 14px 28px #1b253d42; }
-.gate-card .gate-error { color: #ffc5ba !important; }
-.card { background: var(--panel) !important; color: var(--text); text-decoration: none; }
-a.card:hover { border-color: #b49a73; background: #37485b !important; }
-input,select { background: #233140 !important; min-height: 46px; color: var(--text); }
-input::placeholder { color: #b4c0cd; }
-p { color: var(--muted); }
-.panel { padding: clamp(16px,3vw,28px); background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; }
-.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-block-end: 20px; }
-.toolbar form { margin: 0; }
-.library-search { display: grid; grid-template-columns: 2fr 1fr auto; align-items: end; gap: 12px; margin-block: 0 28px; }
-.folder-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,245px),1fr)); gap: 12px; }
-.folder-grid li,.lesson-list li { margin: 0; }
-.folder-card { display: flex !important; gap: 12px; align-items: center; font-weight: 750; min-height: 76px; }
-.folder-card span:nth-child(2) { flex: 1; }
-.folder-arrow { margin-inline-start: auto; color: var(--gold); font-size: 1.4rem; }
-.folder-icon { width: 36px; height: 36px; border-radius: 8px; background: #465164; display: grid; place-items: center; color: var(--gold); flex: none; }
-.folder-icon svg { width: 20px; height: 20px; }
-.lesson-list { display: grid; gap: 10px; }
-.lesson-title { display: block; font-size: clamp(1.08rem,2.3vw,1.24rem); font-weight: 720; line-height: 1.55; }
-.lesson-meta { display: block; color: var(--muted); margin-block-start: 5px; font-size: .9rem; }
-.media-panel { max-width: 880px; }
-.media-panel h2 { font-size: 1.18rem; margin-block: 14px 4px; }
-.media-panel video { border-radius: 10px; }
-.breadcrumbs { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; color: var(--muted); margin-block-end: 18px; font-size: .95rem; }
-.section-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; }
-.section-top p { margin-block-end: 12px; }
+:focus-visible { outline: 3px solid var(--gold2); outline-offset: 3px; }
+ul { list-style: none; margin: 0; padding: 0; }
+
+/* header */
+.header { position: sticky; top: 0; z-index: 5; background: #0b1420ee; backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.nav { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; font: 700 1.55rem var(--display); color: var(--gold2); text-decoration: none; }
+.brand-mark { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(145deg,var(--gold2),var(--gold)); color: #1c2430; font: 700 1.3rem var(--display); }
+.nav-links { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.nav-link { color: var(--text); text-decoration: none; padding: 8px 12px; border-radius: 10px; background: none; border: 0; cursor: pointer; font-size: .95rem; }
+.nav-link:hover { background: var(--surface); }
+.nav-links form { margin: 0; display: block; }
+
+/* buttons */
+.button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 10px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface2); color: var(--text); text-decoration: none; font-weight: 700; line-height: 1.3; cursor: pointer; }
+.button:hover { background: #274260; }
+.button.gold { background: linear-gradient(145deg,var(--gold2),var(--gold)); color: #1c2430; border-color: transparent; }
+.button.gold:hover { filter: brightness(1.07); }
+.button.small { min-height: 40px; padding: 6px 14px; font-size: .92rem; }
+.button.danger { border-color: #7a3b3b; color: var(--bad); background: #2a1a20; }
+.nav .button { min-height: 40px; padding: 6px 16px; }
+
+/* forms */
+form { margin: 0; }
+label { display: grid; gap: 6px; font-weight: 600; }
+input,select { width: 100%; min-height: 48px; padding: 10px 14px; color: var(--text); background: #0f1c2d; border: 1px solid var(--line); border-radius: 12px; font-size: 16px; }
+input::placeholder { color: #8397ad; }
+input[type=file] { padding: 10px; }
+.form-grid { display: grid; gap: 16px; }
+.searchbar { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; margin-block: 8px 24px; }
+.searchbar.with-select { grid-template-columns: 2fr 1fr auto; }
+.searchbar label { font-size: .9rem; color: var(--muted); }
+
+/* panels */
+.panel { padding: clamp(18px,3vw,28px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.panel > :last-child { margin-bottom: 0; }
+.stack { max-width: 720px; }
+.breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); margin-block-end: 16px; font-size: .95rem; }
+.breadcrumbs a { color: var(--gold); }
+.section-top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-block-start: 8px; }
+.empty-state { text-align: center; padding-block: 36px; }
 .empty-state p { margin: 0; }
-.pagination { display: flex; flex-wrap: wrap; gap: 12px; margin-block-start: 20px; }
-.site-footer { border-top: 1px solid var(--edge); padding-block: 18px 28px; color: var(--muted); font-size: .9rem; }
-@media(max-width:620px) {
+
+/* hero (home) */
+.hero { padding-block: 44px 8px; max-width: 760px; }
+.hero h1 strong { display: block; color: var(--gold); }
+.hero p { font-size: 1.1rem; }
+.page-main { padding-block: 28px 56px; }
+
+/* category cards */
+.folder-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,230px),1fr)); gap: 14px; }
+.folder-card { display: flex; align-items: center; gap: 14px; min-height: 84px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); text-decoration: none; font-weight: 700; overflow-wrap: anywhere; transition: transform .12s, border-color .12s, background .12s; }
+.folder-card:hover { transform: translateY(-2px); border-color: var(--gold); background: var(--surface2); }
+.folder-card .folder-name { flex: 1; }
+.folder-icon { width: 44px; height: 44px; border-radius: 12px; background: #11233a; display: grid; place-items: center; color: var(--gold); flex: none; }
+.folder-icon svg { width: 24px; height: 24px; }
+.folder-arrow { color: var(--gold); font-size: 1.5rem; }
+
+/* lessons */
+.lesson-list { display: grid; gap: 10px; }
+.lesson-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); text-decoration: none; }
+a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
+.lesson-main { display: grid; gap: 4px; min-width: 0; }
+.lesson-title { font-size: 1.1rem; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.lesson-title a { color: var(--text); text-decoration: none; }
+.lesson-title a:hover { color: var(--gold2); }
+.lesson-meta { color: var(--muted); font-size: .9rem; }
+.lesson-badges { display: flex; gap: 6px; flex: none; flex-wrap: wrap; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .8rem; font-weight: 700; letter-spacing: .02em; background: #223c59; color: var(--gold2); border: 1px solid #35557a; }
+.badge.muted { background: transparent; color: var(--muted); border-color: var(--line); font-weight: 500; }
+.badge.warn { background: #3a2a1b; color: var(--warn); border-color: #6b4a2a; }
+.badge.ok { background: #1a3328; color: var(--ok); border-color: #2f5f47; }
+.pagination { display: flex; flex-wrap: wrap; gap: 12px; margin-block-start: 22px; }
+
+/* course page */
+.course-head { margin-block-end: 22px; }
+.course-head .badge { margin-inline-end: 6px; }
+.player-grid { display: grid; gap: 18px; max-width: 880px; }
+.player-card { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.player-card h2 { margin: 0 0 12px; font-size: 1.2rem; }
+.player-card video { width: 100%; display: block; aspect-ratio: 16/9; background: #000; border-radius: 10px; }
+.player-card audio { width: 100%; display: block; }
+.player-actions { margin-block-start: 14px; }
+
+/* notices */
+.notice { padding: 12px 16px; border-radius: 12px; margin: 0 0 18px; background: #173326; color: var(--ok); border: 1px solid #2f5f47; }
+.notice.error { background: #3a1f24; color: var(--bad); border-color: #7a3b3b; }
+.notice.info { background: var(--surface); color: var(--muted); border-color: var(--line); }
+
+/* admin */
+.admin-hero { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-block-end: 8px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 12px; margin-block: 18px; }
+.stat { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.stat b { display: block; font: 700 1.9rem var(--display); color: var(--gold2); line-height: 1.2; }
+.stat span { color: var(--muted); font-size: .9rem; }
+.stat.warn b { color: var(--warn); }
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-block: 16px; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-block: 8px 16px; }
+.filters a { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); text-decoration: none; font-size: .92rem; }
+.filters a[aria-current=true] { background: var(--surface2); color: var(--gold2); border-color: var(--gold); }
+.admin-row { align-items: flex-start; flex-wrap: wrap; }
+.row-menu summary { cursor: pointer; color: var(--muted); font-size: .9rem; padding: 6px 4px; }
+.row-menu[open] { flex-basis: 100%; padding-block-start: 6px; border-top: 1px solid var(--line); margin-block-start: 6px; }
+details.panel summary, details.help summary { cursor: pointer; font-weight: 700; }
+details.help { margin-block-start: 26px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 0 0; }
+
+/* access gate */
+.gate-shell { display: grid; grid-template-columns: 1.1fr 1fr; gap: clamp(22px,5vw,64px); align-items: center; margin-block: 40px; padding: clamp(24px,5vw,60px); border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(135deg,#1d3350,#13243a 60%,#1b2a3d); box-shadow: 0 24px 60px #05101c66; }
+.gate-shell h1 strong { color: var(--gold); display: block; }
+.gate-card { background: #0f1c2d; border: 1px solid var(--line); border-radius: 16px; padding: clamp(18px,3vw,30px); }
+.gate-card h2 { margin-block-start: 0; }
+.gate-card input { text-align: center; letter-spacing: .4em; font-size: 22px; margin-block: 8px 14px; }
+.gate-card .button { width: 100%; }
+.gate-error { color: var(--bad); }
+
+.site-footer { border-top: 1px solid var(--line); padding-block: 22px 30px; color: var(--muted); font-size: .9rem; text-align: center; }
+
+@media (max-width: 680px) {
+  body { font-size: 16.5px; }
   .shell { width: calc(100% - 28px); }
-  .nav { min-height: 60px; }
-  .library-search { grid-template-columns: 1fr; }
-  .library-search button { width: 100%; }
-  .gate-shell { min-height: auto; }
-  .panel { padding: 16px; }
+  .gate-shell { grid-template-columns: 1fr; margin-block: 18px; }
+  .searchbar, .searchbar.with-select { grid-template-columns: 1fr; }
+  .searchbar .button { width: 100%; }
+  .lesson-card { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .nav { flex-wrap: wrap; padding-block: 8px; row-gap: 4px; }
+  .nav-links { width: 100%; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 4px; }
+  .nav-links:empty { display: none; }
+  .nav-link { padding: 8px 6px; }
+  .stats { grid-template-columns: repeat(3,1fr); gap: 8px; }
+  .stat { padding: 10px 12px; }
+  .stat b { font-size: 1.5rem; }
+  .stat span { font-size: .8rem; }
+  .brand { font-size: 1.3rem; }
+  .player-card { padding: 14px; }
 }
 `;
 
@@ -98,26 +191,21 @@ function json(message, status = 200) {
 const hex = (buffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
 const hash = async (input) => hex(await crypto.subtle.digest("SHA-256", encode.encode(input)));
 
+const brandHtml = '<a class="brand" href="/"><span class="brand-mark" aria-hidden="true">א</span>אור תורה</a>';
+
 function gatePage(error = false) {
   return new Response(`<!doctype html>
 <html lang="he" dir="rtl">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="ספריית שיעורי הרב נתן רוטמן בעברית.">
-<title>שיעורי הרב נתן רוטמן | אור תורה</title><link rel="stylesheet" href="/style.css">
-<style>
-.gate-shell{display:grid;grid-template-columns:1.05fr 1fr;gap:clamp(22px,5vw,72px);align-items:center;margin-block:34px;padding:clamp(24px,5vw,64px);border:1px solid var(--edge);border-radius:20px;background:linear-gradient(140deg,#141f2e 55%,#372d23)}
-.gate-shell h1{font:700 clamp(2.2rem,5vw,4.5rem)/1.08 var(--display)}.gate-shell h1 strong{color:var(--gold)}
-.gate-shell p{color:var(--muted);margin-block:12px}.gate-card{min-width:0;background:#101926;border:1px solid var(--edge);border-radius:15px;padding:clamp(18px,3vw,32px)}
-.gate-card h2{margin-block-end:16px}.gate-card label{display:block}.gate-card input{display:block;width:100%;margin:8px 0;padding:12px;color:var(--text);background:var(--base);border:1px solid var(--gold);border-radius:8px;text-align:center;font-size:16px;letter-spacing:.3em}.gate-card button{width:100%;justify-content:center;border:0;cursor:pointer}.gate-card p a{color:var(--gold);text-decoration:underline}.gate-card .gate-error{color:#ffd0c8}.gate-nav{display:flex;gap:12px;align-items:center}
-@media(max-width:680px){.gate-shell{grid-template-columns:1fr;margin-block:20px}.gate-nav{gap:8px}.gate-nav .button{padding-inline:10px}}
-</style></head>
-<body><header class="header"><div class="shell nav"><a class="brand" href="/">אור תורה</a>
-<nav class="gate-nav" aria-label="ניווט ראשי"><a class="nav-link" href="/access" aria-current="page">גישה</a><a class="button gold" href="${mailLink}">בקשת גישה</a></nav></div></header>
-<main class="shell gate-shell"><section><h1>שיעורי<br><strong>הרב נתן רוטמן</strong></h1><p>ספריית שיעורי תורה לצפייה ולהאזנה.</p></section>
-<section class="gate-card" aria-labelledby="gate-title"><h2 id="gate-title">גישה לשיעורים</h2>
+<title>שיעורי הרב נתן רוטמן | אור תורה</title><link rel="stylesheet" href="/style.css"></head>
+<body><header class="header"><div class="shell nav">${brandHtml}
+<nav class="nav-links" aria-label="ניווט ראשי"><a class="button gold" href="${mailLink}">בקשת גישה</a></nav></div></header>
+<main class="shell page-main"><div class="gate-shell"><section><h1>שיעורי<strong>הרב נתן רוטמן</strong></h1><p>ספריית שיעורי תורה לצפייה, להאזנה ולהורדה.</p></section>
+<section class="gate-card" aria-labelledby="gate-title"><h2 id="gate-title">כניסה לשיעורים</h2>
 <form action="/access/code" method="post"><label for="course-code">קוד גישה</label><input id="course-code" type="password" name="code" inputmode="numeric" autocomplete="current-password" maxlength="4" placeholder="••••" dir="ltr" required>
 ${error ? '<p class="gate-error" role="alert">קוד הגישה שגוי. נסו שוב.</p>' : ''}<button class="button gold" type="submit">כניסה</button></form>
-<p>אין לכם קוד? <a href="${mailLink}">בקשת גישה בדוא״ל</a></p></section></main>${siteFooter}</body></html>`, {
+<p style="margin-block:16px 0">אין לכם קוד? <a href="${mailLink}">בקשת גישה בדוא״ל</a></p></section></div></main>${siteFooter}</body></html>`, {
     status: error ? 401 : 200,
     headers: { ...security, "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }
   });
@@ -158,14 +246,21 @@ function escapeHtml(value) {
 
 const esc = escapeHtml;
 const redirect = (location) => new Response(null, {status:303, headers:{...security, Location:location}});
-function layout(title, content, status = 200) {
-  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | אור תורה</title><link rel="stylesheet" href="/style.css"><style>
-  main{padding-block:36px;min-height:70vh}footer{padding-block:24px;border-top:1px solid var(--edge)}h1,h2,p{margin-block:0 16px}h1{font:700 clamp(2rem,6vw,3.5rem)/1.15 var(--display)}form{display:grid;gap:12px;margin-block:18px}label{display:grid;gap:6px}input,select{width:100%;padding:11px;color:var(--text);background:var(--base);border:1px solid var(--edge);border-radius:8px;font:inherit;font-size:16px}button{justify-self:start;cursor:pointer;border:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,185px),1fr));gap:12px;margin-block:22px}.card{display:block;padding:18px;background:#151e2c;border:1px solid var(--edge);border-radius:12px;overflow-wrap:anywhere}.chosen{border-color:var(--gold)}.stack{max-width:720px}ul{padding-inline-start:0;list-style:none}li{margin-block:8px}video,iframe,audio{width:100%;display:block;margin-block:15px}iframe,video{aspect-ratio:16/9;border:0;background:#000}details{margin-block:18px}summary{cursor:pointer}
-  </style></head><body><header class="header"><div class="shell nav"><a class="brand" href="/">אור תורה</a><a href="${mailLink}">בקשת גישה</a></div></header><main class="shell"><h1>${esc(title)}</h1>${content}</main>${siteFooter}</body></html>`,
+function layout(title, content, status = 200, opts = {}) {
+  const logout = '<form method="post" action="/admin/logout"><button class="nav-link">יציאה</button></form>';
+  const nav = opts.admin
+    ? `<a class="nav-link" href="/admin">ניהול</a><a class="nav-link" href="/admin?add=1">הוספת שיעור</a><a class="nav-link" href="/">לאתר</a>${logout}`
+    : opts.bare ? "" : '<a class="nav-link" href="/">הספרייה</a>';
+  const heading = opts.heading === false ? "" : `<h1>${esc(title)}</h1>`;
+  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | אור תורה</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}</body></html>`,
   {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
 }
+
+const notice = (text, type = "ok") => `<p class="notice ${type}" role="${type === "error" ? "alert" : "status"}">${esc(text)}</p>`;
+const badges = video => `<span class="badge">MP3</span>${video ? '<span class="badge">MP4</span>' : '<span class="badge warn">חסר MP4</span>'}`;
+
 function adminLogin(message = "", status = 200) {
-  return layout("ניהול האתר", `<div class="panel stack">${message ? `<p role="alert">${esc(message)}</p>` : ""}<form method="post" action="/admin/login"><label>קוד ניהול<input type="password" name="pin" inputmode="numeric" maxlength="4" autocomplete="current-password" required></label><button class="button gold">כניסה לניהול</button></form></div>`, status);
+  return layout("כניסה לניהול", `<div class="panel stack">${message ? notice(message, "error") : ""}<form class="form-grid" method="post" action="/admin/login"><label>קוד ניהול<input type="password" name="pin" inputmode="numeric" maxlength="4" autocomplete="current-password" dir="ltr" required></label><button class="button gold">כניסה</button></form></div>`, status, {bare: true});
 }
 
 async function adminAuthorized(request, origin) {
@@ -388,32 +483,37 @@ function writeStatus(error) {
     ? error.message : "upload-error";
 }
 
-function courseUploadForm(env, current, options, error = "", status = 200, check = "") {
+async function courseUploadForm(env, current, error = "", status = 200, check = "") {
   const enabled = uploadReady(env);
-  return layout("הוספת שיעור", `<div class="panel stack"><a href="/admin">חזרה לניהול הספרייה</a>
-    ${error ? `<p role="alert">${esc(error)}</p>` : ""}
-    ${enabled ? `<p><a href="/admin?add=1&amp;check=1">בדיקת החיבור להעלאה</a>${check ? ` · <span role="status" dir="auto">${esc(check)}</span>` : ""}</p>` : '<p role="status">העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה. בינתיים ניתן להעלות ישירות ל־Backblaze.</p>'}
-    <form action="/admin/backblaze-upload" method="post" enctype="multipart/form-data">
-      <fieldset ${enabled ? "" : "disabled"} style="display:grid;gap:14px;border:0;padding:0;margin:0;min-width:0">
+  let folders = [];
+  try { folders = await backblazeFolders(await backblaze(env)); } catch {}
+  const options = folders.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
+  return layout("הוספת שיעור", `<div class="panel stack">
+    ${error ? notice(error, "error") : ""}
+    ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה. בינתיים ניתן להעלות ישירות ל־Backblaze.", "info")}
+    <form class="form-grid" action="/admin/backblaze-upload" method="post" enctype="multipart/form-data">
+      <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
         <input type="hidden" name="upload_id" value="${crypto.randomUUID()}">
         <label>כותרת השיעור<input name="title" maxlength="180" required></label>
-        <label>קטגוריה<input name="folder" maxlength="120" value="${esc(current)}" list="course-categories" required></label>
-        <datalist id="course-categories">${options}</datalist>
+        <label>קטגוריה<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label>
+        <label>או קטגוריה חדשה<input name="new_folder" maxlength="120" placeholder="שם הקטגוריה החדשה"></label>
         <label>קובץ שמע MP3<input type="file" name="audio" accept=".mp3,audio/mpeg" required></label>
-        <label>קובץ וידאו MP4 (אופציונלי)<input type="file" name="video" accept=".mp4,video/mp4"></label>
-        <p>עד 30 MiB בסך הכול. לקבצים גדולים יותר, העלו ישירות ל־Backblaze.</p>
+        <label>קובץ וידאו MP4 (אפשר להוסיף אחר כך)<input type="file" name="video" accept=".mp4,video/mp4"></label>
+        <p>עד 30MB בסך הכול. לקבצים גדולים או להעלאה של הרבה שיעורים, השתמשו בהעלאה ישירה ל־Backblaze.</p>
         <button class="button gold">פרסום השיעור</button>
       </fieldset>
-    </form></div>`, status);
+    </form>
+    ${enabled ? `<p style="margin-block:16px 0"><a href="/admin?add=1&amp;check=1">בדיקת החיבור להעלאה</a>${check ? ` · <span role="status" dir="auto">${esc(check)}</span>` : ""}</p>` : ""}
+  </div>`, status, {admin: true});
 }
 
 async function addBackblazeCourse(request, env) {
-  if (!uploadReady(env)) return courseUploadForm(env, "", "", "", 503);
-  const tooLarge = () => courseUploadForm(env, "", "", "הקבצים גדולים מדי להעלאה מהאתר.", 413);
+  if (!uploadReady(env)) return courseUploadForm(env, "", "", 503);
+  const tooLarge = () => courseUploadForm(env, "", "הקבצים גדולים מדי להעלאה מהאתר.", 413);
   const length = Number(request.headers.get("Content-Length"));
   if (!length || length > courseUploadLimit + 64 * 1024) return tooLarge();
   const form = await request.formData().catch(() => null);
-  const folder = String(form?.get("folder") ?? "").trim();
+  const folder = (String(form?.get("new_folder") ?? "").trim() || String(form?.get("folder") ?? "")).trim();
   const title = String(form?.get("title") ?? "").trim();
   const id = String(form?.get("upload_id") ?? "");
   const audio = form?.get("audio");
@@ -421,7 +521,7 @@ async function addBackblazeCourse(request, env) {
   const validName = (value, max) => value && value !== "." && value !== ".." && value.length <= max && !/[/\\\x00-\x1f\x7f]/.test(value);
   if (!validName(folder, 120) || !validName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) ||
       !audio?.size || !/\.mp3$/i.test(audio.name) || (video?.size && !/\.mp4$/i.test(video.name))) {
-    return courseUploadForm(env, folder, "", "בדקו את הכותרת, הקטגוריה וסוגי הקבצים.", 400);
+    return courseUploadForm(env, folder, "בדקו את הכותרת, הקטגוריה וסוגי הקבצים.", 400);
   }
   if (audio.size + (video?.size || 0) > courseUploadLimit) return tooLarge();
   try {
@@ -431,7 +531,7 @@ async function addBackblazeCourse(request, env) {
     await storage.upload(audio, key + ".mp3", "audio/mpeg");
     return redirect("/admin?" + new URLSearchParams({folder, published: "1"}));
   } catch (error) {
-    return courseUploadForm(env, folder, "", "ההעלאה לא הושלמה. קוד תקלה: " + writeStatus(error), 502);
+    return courseUploadForm(env, folder, "ההעלאה לא הושלמה. קוד תקלה: " + writeStatus(error), 502);
   }
 }
 
@@ -462,52 +562,61 @@ function adminCourseRow(folder, course, hidden) {
   const {code, title, video} = course;
   const controls = `<form method="post" action="/admin/course-visibility">
     <input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">
-    <button class="button ${hidden ? "gold" : ""}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "אישור הסרה מהספרייה"}</button>
+    <button class="button small ${hidden ? "gold" : "danger"}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "אישור הסרה מהספרייה"}</button>
   </form>`;
-  return `<li class="card"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
-    <small class="lesson-meta">${video ? "MP3 + MP4" : "MP3 בלבד — חסר MP4"} · ${hidden ? "מוסתר" : "מפורסם"}</small>
-    ${hidden ? controls : `<details><summary>הסרה מהספרייה</summary><p>הקבצים יישארו ב־Backblaze ואפשר יהיה להחזיר את השיעור.</p>${controls}</details>`}</li>`;
+  return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
+    <span class="lesson-badges">${badges(video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
+    ${hidden ? controls : `<details class="row-menu"><summary>הסרה מהספרייה</summary><p>הקבצים יישארו ב־Backblaze ואפשר יהיה להחזיר את השיעור.</p>${controls}</details>`}</li>`;
 }
 
+const adminHref = params => "/admin?" + new URLSearchParams(params);
+
 async function backblazeAdmin(env, url) {
-  const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=1">הוספת שיעור</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a><a class="button" href="/">לספריית השיעורים</a><form method="post" action="/admin/logout"><button class="button">יציאה מהניהול</button></form></div>';
-  const howTo = '<details class="panel"><summary>הוספה, עדכון והסרת שיעורים</summary><ol><li>צרו תיקייה ב־Backblaze לכל קטגוריה.</li><li>העלו MP3 ו־MP4 לאותה תיקייה עם שם זהה לפני הסיומת.</li><li>בחרו כאן את הקטגוריה כדי לבדוק את השיעורים שהתפרסמו. אפשר להסיר שיעורים מהספרייה ולהחזיר אותם כאן. את קובצי המקור עורכים ב־Backblaze.</li></ol></details>';
+  const current = url.searchParams.get("folder") ?? "";
+  if (url.searchParams.has("add")) {
+    let check = "";
+    if (uploadReady(env) && url.searchParams.has("check")) {
+      try {
+        await (await backblaze(env, true)).checkUpload();
+        check = "החיבור להעלאה תקין";
+      } catch (error) {
+        check = writeStatus(error);
+      }
+    }
+    return courseUploadForm(env, current, "", 200, check);
+  }
+  const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=1">+ הוספת שיעור</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
+  const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. שיעור בלי MP4 מסומן ״חסר MP4״.</li><li>אפשר להסיר שיעור מהספרייה ולהחזיר אותו. הקבצים עצמם לא נמחקים.</li></ol></details>';
+  const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
+    ({hide: notice("השיעור הוסר מהספרייה."), restore: notice("השיעור הוחזר לספרייה.")}[url.searchParams.get("visibility")] ?? "");
   try {
     const storage = await backblaze(env);
     const folders = await backblazeFolders(storage);
-    const current = url.searchParams.get("folder") ?? "";
-    const status = `${url.searchParams.has("published") ? '<p role="status">השיעור פורסם בהצלחה.</p>' : ""}<p role="status">Backblaze מחובר · ${folders.length} קטגוריות</p>`;
-    const options = folders.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
-    if (url.searchParams.has("add")) {
-      let check = "";
-      if (uploadReady(env) && url.searchParams.has("check")) {
-        try {
-          await (await backblaze(env, true)).checkUpload();
-          check = "החיבור להעלאה תקין";
-        } catch (error) {
-          check = writeStatus(error);
-        }
-      }
-      return courseUploadForm(env, current, options, "", 200, check);
+    if (!folders.includes(current)) {
+      const cards = folders.map(folder => `<li><a class="folder-card" href="${esc(adminHref({folder}))}">${folderIcon}<span class="folder-name">${esc(folder)}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`).join("");
+      return layout("ניהול הספרייה", flash + actions +
+        `<div class="stats"><div class="stat"><b>${folders.length}</b><span>קטגוריות</span></div><div class="stat"><b>${uploadReady(env) ? "פעילה" : "כבויה"}</b><span>העלאה מהאתר</span></div></div>
+        <h2>הקטגוריות</h2>${cards ? `<ul class="folder-grid">${cards}</ul>` : '<div class="panel empty-state"><p>עדיין אין קטגוריות. צרו תיקייה ב־Backblaze או הוסיפו שיעור.</p></div>'}` + howTo, 200, {admin: true});
     }
-    const form = `<form method="get" class="library-search"><label>קטגוריה לבדיקה<select name="folder" required><option value="">בחירת קטגוריה</option>${options}</select></label><button class="button gold">בדיקת שיעורים</button></form>`;
-    let result = `<ul class="folder-grid">${folders.map(folder => `<li><a class="card folder-card" href="/admin?${esc(new URLSearchParams({folder}))}">${folderIcon}${esc(folder)}</a></li>`).join("")}</ul>`;
-    if (folders.includes(current)) {
-      const {courses, notes} = await planImport(current, storage);
-      const {results: hiddenRows} = await env.DB.prepare("SELECT course_id FROM backblaze_hidden_courses WHERE folder = ?").bind(current).all();
-      const hiddenIds = new Set(hiddenRows.map(row => row.course_id));
-      const published = courses.filter(course => !hiddenIds.has(course.code));
-      const hidden = courses.filter(course => hiddenIds.has(course.code));
-      const notice = {hide: "השיעור הוסר מהספרייה.", restore: "השיעור הוחזר לספרייה."}[url.searchParams.get("visibility")];
-      result = `<h2>${esc(current)}</h2>${typeof notice === "string" ? `<p role="status">${notice}</p>` : ""}
-        <p>${published.length} שיעורים מפורסמים · ${hidden.length} מוסתרים</p>
-        <ul class="lesson-list">${published.map(course => adminCourseRow(current, course, false)).join("")}</ul>
-        ${hidden.length ? `<details class="panel"><summary>שיעורים שהוסרו (${hidden.length})</summary><ul class="lesson-list">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
-        ${notes.length ? `<details class="panel"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}`;
-    }
-    return layout("ניהול הספרייה", actions + status + form + result + howTo);
+    const q = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
+    const onlyMissing = url.searchParams.get("missing") === "1";
+    const {courses, notes} = await planImport(current, storage);
+    const {results: hiddenRows} = await env.DB.prepare("SELECT course_id FROM backblaze_hidden_courses WHERE folder = ?").bind(current).all();
+    const hiddenIds = new Set(hiddenRows.map(row => row.course_id));
+    const all = courses.filter(course => !hiddenIds.has(course.code));
+    const hidden = courses.filter(course => hiddenIds.has(course.code));
+    const missing = all.filter(course => !course.video).length;
+    const shown = all.filter(course => (!onlyMissing || !course.video) && course.title.toLowerCase().includes(q.toLowerCase()));
+    const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
+    return layout(current, flash + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + `
+      <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat${missing ? " warn" : ""}"><b>${missing}</b><span>חסר MP4</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
+      <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${onlyMissing ? '<input type="hidden" name="missing" value="1">' : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
+      <div class="filters">${chip("הכול", {q}, !onlyMissing)}${chip(`חסר MP4 (${missing})`, {q, missing: 1}, onlyMissing)}</div>
+      ${shown.length ? `<ul class="lesson-list">${shown.map(course => adminCourseRow(current, course, false)).join("")}</ul>` : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>'}
+      ${hidden.length ? `<details class="help"><summary>שיעורים שהוסרו (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
+      ${notes.length ? `<details class="help"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}` + howTo, 200, {admin: true, before: `<nav class="breadcrumbs" aria-label="מיקום"><a href="/admin">ניהול</a><span aria-hidden="true">‹</span><span>${esc(current)}</span></nav>`});
   } catch {
-    return layout("ניהול הספרייה", actions + '<p role="alert">לא ניתן לטעון את Backblaze כרגע. <a href="/admin">ניסיון נוסף</a></p>' + howTo, 502);
+    return layout("ניהול הספרייה", actions + notice("לא ניתן לטעון את Backblaze כרגע. נסו שוב בעוד רגע.", "error") + '<p><a class="button" href="/admin">ניסיון נוסף</a></p>' + howTo, 502, {admin: true});
   }
 }
 
@@ -529,22 +638,28 @@ async function b2Catalogue(request, env, url) {
       const name = url.searchParams.has("download") ? course.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, " ").trim().slice(0, 150) + ext : "";
       return file ? storage.media(request, file.etag, medium === "video" ? "video/mp4" : "audio/mpeg", name) : json("הקובץ לא נמצא", 404);
     }
-    return layout(course.title, `<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">ספריית השיעורים</a><span aria-hidden="true">‹</span><a href="${esc(backblazeCourseLink(category))}">${esc(category)}</a></nav><div class="panel media-panel">
-      <h2>צפייה בשיעור (MP4)</h2>
-      ${course.video ? `<video controls playsinline preload="metadata" src="${esc(backblazeCourseLink(category, courseId, "video"))}"></video>
-        <p><a class="button" href="${esc(backblazeCourseLink(category, courseId, "video") + "&download=1")}">הורדת MP4</a></p>` : '<p role="status">אין עדיין קובץ וידאו לשיעור זה.</p>'}
-      <h2>האזנה לשיעור (MP3)</h2>
-      <audio controls preload="metadata" src="${esc(backblazeCourseLink(category, courseId, "audio"))}"></audio>
-      <p><a class="button" href="${esc(backblazeCourseLink(category, courseId, "audio") + "&download=1")}">הורדת MP3</a></p></div>`);
+    const link = (kind, extra = "") => esc(backblazeCourseLink(category, courseId, kind) + extra);
+    const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a><span aria-hidden="true">‹</span><a href="${esc(backblazeCourseLink(category))}">${esc(category)}</a></nav>`;
+    return layout(course.title, `<div class="course-head">${badges(course.video)}</div>
+      <div class="player-grid">
+        <section class="player-card"><h2>צפייה בשיעור · MP4</h2>
+          ${course.video ? `<video controls playsinline preload="metadata" src="${link("video")}"></video>
+          <div class="player-actions"><a class="button" href="${link("video", "&download=1")}">הורדת MP4</a></div>` : '<p style="margin:0">אין עדיין קובץ וידאו לשיעור זה.</p>'}</section>
+        <section class="player-card"><h2>האזנה לשיעור · MP3</h2>
+          <audio controls preload="metadata" src="${link("audio")}"></audio>
+          <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>
+      </div>`, 200, {before: crumbs});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const folders = await backblazeFolders(storage);
-  const search = `<form method="get" class="panel library-search"><label>חיפוש שיעור<input type="search" name="q" maxlength="120" placeholder="שם השיעור" value="${esc(query)}"></label><label>קטגוריה<select name="folder"><option value="">כל הקטגוריות</option>${folders.map(folder => `<option value="${esc(folder)}"${folder === category ? " selected" : ""}>${esc(folder)}</option>`).join("")}</select></label><button class="button gold">חיפוש</button></form>`;
+  const searchForm = (withSelect) => `<form method="get" role="search" class="searchbar${withSelect ? " with-select" : ""}"><label>חיפוש שיעור<input type="search" name="q" maxlength="120" placeholder="שם השיעור" value="${esc(query)}"></label>${withSelect
+    ? `<label>קטגוריה<select name="folder"><option value="">כל הקטגוריות</option>${folders.map(folder => `<option value="${esc(folder)}"${folder === category ? " selected" : ""}>${esc(folder)}</option>`).join("")}</select></label>`
+    : ""}<button class="button gold">חיפוש</button></form>`;
   if (!category && !query) {
-    const cards = folders.map(folder => `<li><a class="card folder-card" href="${esc(backblazeCourseLink(folder))}">${folderIcon}<span>${esc(folder)}</span><span aria-hidden="true" class="folder-arrow">‹</span></a></li>`).join("");
-    return layout("שיעורי הרב נתן רוטמן", search + '<h2>קטגוריות</h2>' + (cards
+    const cards = folders.map(folder => `<li><a class="folder-card" href="${esc(backblazeCourseLink(folder))}">${folderIcon}<span class="folder-name">${esc(folder)}</span><span aria-hidden="true" class="folder-arrow">‹</span></a></li>`).join("");
+    return layout("שיעורי הרב נתן רוטמן", `<section class="hero"><h1>שיעורי<strong>הרב נתן רוטמן</strong></h1><p>צפייה, האזנה והורדה של השיעורים, מסודרים לפי נושאים.</p></section>${searchForm(false)}<h2 style="margin-block-start:8px">נושאים</h2>` + (cards
       ? `<ul class="folder-grid">${cards}</ul>`
-      : '<div class="panel empty-state"><p>עדיין אין קטגוריות בספרייה.</p></div>'));
+      : '<div class="panel empty-state"><p>עדיין אין קטגוריות בספרייה.</p></div>'), 200, {heading: false});
   }
   if (category && !folders.includes(category)) return layout("התיקייה לא נמצאה", '<a href="/">חזרה לספרייה</a>', 404);
   const hiddenQuery = category
@@ -557,7 +672,7 @@ async function b2Catalogue(request, env, url) {
     const {courses} = await planImport(folder, storage);
     for (const {code, title, video} of courses) {
       if (!hidden.has(JSON.stringify([folder, code])) && title.toLowerCase().includes(query.toLowerCase())) {
-        rows.push(`<li><a class="card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-title">${esc(title)}</span><small class="lesson-meta">${esc(folder)} · ${video ? "MP3 + MP4" : "MP3"}</small></a></li>`);
+        rows.push(`<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-main"><span class="lesson-title">${esc(title)}</span><span class="lesson-meta">${esc(folder)}</span></span><span class="lesson-badges">${badges(video)}</span></a></li>`);
       }
     }
   }
@@ -566,12 +681,13 @@ async function b2Catalogue(request, env, url) {
   const page = Math.max(1, Math.min(pageCount, Number.parseInt(url.searchParams.get("page"), 10) || 1));
   const pageLink = next => "/?" + new URLSearchParams({folder: category, q: query, page: next});
   const pager = pageCount > 1 ? `<nav class="pagination" aria-label="עמודי שיעורים">
-    ${page > 1 ? `<a class="button" href="${esc(pageLink(page - 1))}">העמוד הקודם</a>` : ""}
-    ${page < pageCount ? `<a class="button" href="${esc(pageLink(page + 1))}">העמוד הבא</a>` : ""}
+    ${page > 1 ? `<a class="button" href="${esc(pageLink(page - 1))}">‹ העמוד הקודם</a>` : ""}
+    <span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pageCount}</span>
+    ${page < pageCount ? `<a class="button" href="${esc(pageLink(page + 1))}">העמוד הבא ›</a>` : ""}
   </nav>` : "";
   return layout(category || "תוצאות חיפוש",
-    '<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">כל הקטגוריות</a></nav>' + search +
-    `<div class="section-top"><h2>${query ? "תוצאות חיפוש" : "שיעורים"}</h2><p>${rows.length} שיעורים</p></div>` +
+    '<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a>' + (category ? `<span aria-hidden="true">‹</span><span>${esc(category)}</span>` : "") + '</nav>' + searchForm(true) +
+    `<div class="section-top"><h2 style="margin:0">${query ? "תוצאות חיפוש" : "שיעורים"}</h2><p>${rows.length} שיעורים</p></div>` +
     (rows.length ? `<ul class="lesson-list">${rows.slice((page - 1) * perPage, page * perPage).join("")}</ul>`
       : `<div class="panel empty-state"><p>${query ? "לא נמצאו שיעורים. נסו לשנות את החיפוש." : "עדיין אין שיעורים בקטגוריה זו."}</p></div>`) + pager);
 }
