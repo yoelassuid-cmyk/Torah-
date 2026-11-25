@@ -137,9 +137,15 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-block: 8px 16px; }
 .filters a { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); text-decoration: none; font-size: .92rem; }
 .filters a[aria-current=true] { background: var(--surface2); color: var(--gold2); border-color: var(--gold); }
-.admin-row { align-items: flex-start; flex-wrap: wrap; }
+.admin-row { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 10px 14px; }
+.row-actions { justify-self: end; }
+.danger-zone summary { color: var(--bad); }
+.danger-zone form { margin-block-start: 10px; }
+label.check { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+input[type=checkbox] { width: 22px; height: 22px; min-height: 0; accent-color: var(--gold); flex: none; }
 .row-menu summary { cursor: pointer; color: var(--muted); font-size: .9rem; padding: 6px 4px; }
-.row-menu[open] { flex-basis: 100%; padding-block-start: 6px; border-top: 1px solid var(--line); margin-block-start: 6px; }
+.row-menu { grid-column: 1 / -1; }
+.row-menu[open] { padding-block-start: 6px; border-top: 1px solid var(--line); }
 details.panel summary, details.help summary { cursor: pointer; font-weight: 700; }
 details.help { margin-block-start: 26px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 0 0; }
@@ -162,6 +168,8 @@ details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 
   .searchbar, .searchbar.with-select { grid-template-columns: 1fr; }
   .searchbar .button { width: 100%; }
   .lesson-card { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .admin-row { grid-template-columns: 1fr; }
+  .row-actions { justify-self: start; }
   .nav { flex-wrap: wrap; padding-block: 8px; row-gap: 4px; }
   .nav-links { width: 100%; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 4px; }
   .nav-links:empty { display: none; }
@@ -364,6 +372,7 @@ async function admin(request, env, url) {
   }
   if (route === "/admin/course-visibility" && request.method === "POST") return setCourseVisibility(request, env);
   if (route === "/admin/backblaze-upload" && request.method === "POST") return addBackblazeCourse(request, env);
+  if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
   return json("פעולה לא זמינה", 405);
 }
@@ -407,6 +416,15 @@ async function backblaze(env, writing = false) {
   return {
     async checkUpload() {
       await getUploadEndpoint();
+    },
+    async deleteFile(fileName, fileId) {
+      const response = await fetch(storageApi.apiUrl + "/b2api/v4/b2_delete_file_version", {
+        method: "POST", headers: {Authorization: authorizationToken, "Content-Type": "application/json"},
+        body: JSON.stringify({fileName, fileId}), redirect: "manual"
+      }).catch(() => { throw new Error("delete-file-network"); });
+      const status = response.status;
+      await response.body?.cancel().catch(() => {});
+      if (!response.ok) throw new Error("delete-file-" + status);
     },
     async upload(file, key, type) {
       const {uploadUrl, authorizationToken: uploadToken} = await getUploadEndpoint();
@@ -479,7 +497,7 @@ const courseUploadLimit = 30 * 1024 * 1024;
 const uploadReady = env => Boolean(env.B2_WRITE_KEY_ID && env.B2_WRITE_APPLICATION_KEY);
 
 function writeStatus(error) {
-  return /^(?:authorize|upload-endpoint|upload-file)-(?:[0-9]{3}|network|format)$/.test(error.message) || /^invalid-(?:key-id|application-key)-format$/.test(error.message)
+  return /^(?:authorize|upload-endpoint|upload-file|delete-file)-(?:[0-9]{3}|network|format)$/.test(error.message) || /^invalid-(?:key-id|application-key)-format$/.test(error.message)
     ? error.message : "upload-error";
 }
 
@@ -558,15 +576,43 @@ async function setCourseVisibility(request, env) {
   }
 }
 
+async function deleteCourse(request, env) {
+  if (Number(request.headers.get("Content-Length")) > 4096) return json("בקשה גדולה מדי", 413);
+  const form = await request.formData().catch(() => null);
+  const folder = String(form?.get("folder") ?? "");
+  const course = String(form?.get("course") ?? "");
+  if (!folder || folder.includes("/") || folder.length > 1024 || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(course) || form?.get("confirm") !== "yes") {
+    return layout("לא ניתן למחוק", '<a href="/admin">חזרה לניהול</a>', 400, {admin: true});
+  }
+  const back = '<p><a class="button" href="' + esc(adminHref({folder})) + '">חזרה לקטגוריה</a></p>';
+  if (!uploadReady(env)) return layout("לא ניתן למחוק", notice("מחיקה מהאתר דורשת הרשאת כתיבה ל־Backblaze.", "error") + back, 503, {admin: true});
+  try {
+    const {courses} = await planImport(folder, await backblaze(env));
+    const found = courses.find(item => item.code === course);
+    if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
+    const writer = await backblaze(env, true);
+    for (const file of [found.video, found.audio]) if (file) await writer.deleteFile(file.key, file.etag);
+    await env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course).run();
+    return redirect(adminHref({folder, deleted: 1}));
+  } catch (error) {
+    const hint = /^delete-file-40[13]$/.test(error.message) ? " למפתח הכתיבה אין הרשאת מחיקה ב־Backblaze." : "";
+    return layout("המחיקה לא הושלמה", notice("המחיקה לא הושלמה." + hint + " קוד תקלה: " + writeStatus(error), "error") + back, 502, {admin: true});
+  }
+}
+
 function adminCourseRow(folder, course, hidden) {
   const {code, title, video} = course;
-  const controls = `<form method="post" action="/admin/course-visibility">
-    <input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">
-    <button class="button small ${hidden ? "gold" : "danger"}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "אישור הסרה מהספרייה"}</button>
-  </form>`;
+  const ids = `<input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">`;
+  const visibility = `<form method="post" action="/admin/course-visibility">${ids}
+    <button class="button small ${hidden ? "gold" : ""}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "הסתרה מהספרייה"}</button></form>`;
+  const remove = `<details class="row-menu danger-zone"><summary>מחיקה סופית</summary>
+    <form method="post" action="/admin/course-delete" class="form-grid">${ids}
+      <p>הקבצים (MP3${video ? " ו־MP4" : ""}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
+      <label class="check"><input type="checkbox" name="confirm" value="yes" required> אני מאשר/ת למחוק את השיעור</label>
+      <button class="button small danger">מחיקת השיעור</button></form></details>`;
   return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
     <span class="lesson-badges">${badges(video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
-    ${hidden ? controls : `<details class="row-menu"><summary>הסרה מהספרייה</summary><p>הקבצים יישארו ב־Backblaze ואפשר יהיה להחזיר את השיעור.</p>${controls}</details>`}</li>`;
+    <span class="row-actions">${visibility}</span>${remove}</li>`;
 }
 
 const adminHref = params => "/admin?" + new URLSearchParams(params);
@@ -586,9 +632,10 @@ async function backblazeAdmin(env, url) {
     return courseUploadForm(env, current, "", 200, check);
   }
   const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=1">+ הוספת שיעור</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
-  const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. שיעור בלי MP4 מסומן ״חסר MP4״.</li><li>אפשר להסיר שיעור מהספרייה ולהחזיר אותו. הקבצים עצמם לא נמחקים.</li></ol></details>';
+  const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. שיעור בלי MP4 מסומן ״חסר MP4״.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
-    ({hide: notice("השיעור הוסר מהספרייה."), restore: notice("השיעור הוחזר לספרייה.")}[url.searchParams.get("visibility")] ?? "");
+    (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
+    ({hide: notice("השיעור הוסתר מהספרייה."), restore: notice("השיעור הוחזר לספרייה.")}[url.searchParams.get("visibility")] ?? "");
   try {
     const storage = await backblaze(env);
     const folders = await backblazeFolders(storage);
@@ -607,13 +654,18 @@ async function backblazeAdmin(env, url) {
     const hidden = courses.filter(course => hiddenIds.has(course.code));
     const missing = all.filter(course => !course.video).length;
     const shown = all.filter(course => (!onlyMissing || !course.video) && course.title.toLowerCase().includes(q.toLowerCase()));
+    const perPage = 40;
+    const pages = Math.max(1, Math.ceil(shown.length / perPage));
+    const page = Math.max(1, Math.min(pages, Number.parseInt(url.searchParams.get("page"), 10) || 1));
+    const pageHref = n => esc(adminHref({folder: current, q, ...(onlyMissing ? {missing: 1} : {}), page: n}));
+    const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
     const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
     return layout(current, flash + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat${missing ? " warn" : ""}"><b>${missing}</b><span>חסר MP4</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${onlyMissing ? '<input type="hidden" name="missing" value="1">' : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !onlyMissing)}${chip(`חסר MP4 (${missing})`, {q, missing: 1}, onlyMissing)}</div>
-      ${shown.length ? `<ul class="lesson-list">${shown.map(course => adminCourseRow(current, course, false)).join("")}</ul>` : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>'}
-      ${hidden.length ? `<details class="help"><summary>שיעורים שהוסרו (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
+      ${shown.length ? `<ul class="lesson-list">${shown.slice((page - 1) * perPage, page * perPage).map(course => adminCourseRow(current, course, false)).join("")}</ul>${pager}` : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>'}
+      ${hidden.length ? `<details class="help"><summary>שיעורים מוסתרים (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
       ${notes.length ? `<details class="help"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}` + howTo, 200, {admin: true, before: `<nav class="breadcrumbs" aria-label="מיקום"><a href="/admin">ניהול</a><span aria-hidden="true">‹</span><span>${esc(current)}</span></nav>`});
   } catch {
     return layout("ניהול הספרייה", actions + notice("לא ניתן לטעון את Backblaze כרגע. נסו שוב בעוד רגע.", "error") + '<p><a class="button" href="/admin">ניסיון נוסף</a></p>' + howTo, 502, {admin: true});
