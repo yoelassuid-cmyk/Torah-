@@ -507,7 +507,7 @@ async function backblaze(env, writing = false) {
         truncated: Boolean(nextFileName)
       };
     },
-    async media(request, fileId, type) {
+    async media(request, fileId, type, downloadName = "") {
       const headers = new Headers({Authorization: authorizationToken});
       const range = request.headers.get("Range");
       if (range) headers.set("Range", range);
@@ -516,6 +516,7 @@ async function backblaze(env, writing = false) {
       });
       if (![200, 206, 416].includes(response.status)) throw new Error("media-" + response.status);
       const resultHeaders = new Headers({...security, "Content-Type": type, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store"});
+      if (downloadName) resultHeaders.set("Content-Disposition", "attachment; filename*=UTF-8''" + encodeURIComponent(downloadName));
       for (const name of ["Content-Length", "Content-Range"]) {
         const value = response.headers.get(name);
         if (value !== null) resultHeaders.set(name, value);
@@ -630,7 +631,7 @@ function adminCourseRow(folder, course, hidden) {
     <button class="button ${hidden ? "gold" : ""}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "אישור הסרה מהספרייה"}</button>
   </form>`;
   return `<li class="card"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
-    <small class="lesson-meta">${video ? "וידאו ושמע" : "שמע"} · ${hidden ? "מוסתר" : "מפורסם"}</small>
+    <small class="lesson-meta">${video ? "MP3 + MP4" : "MP3 בלבד — חסר MP4"} · ${hidden ? "מוסתר" : "מפורסם"}</small>
     ${hidden ? controls : `<details><summary>הסרה מהספרייה</summary><p>הקבצים יישארו ב־Backblaze ואפשר יהיה להחזיר את השיעור.</p>${controls}</details>`}</li>`;
 }
 
@@ -690,11 +691,17 @@ async function b2Catalogue(request, env, url) {
     if (!course) return layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
     if (medium) {
       const file = medium === "video" ? course.video : medium === "audio" ? course.audio : null;
-      return file ? storage.media(request, file.etag, medium === "video" ? "video/mp4" : "audio/mpeg") : json("הקובץ לא נמצא", 404);
+      const ext = medium === "video" ? ".mp4" : ".mp3";
+      const name = url.searchParams.has("download") ? course.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, " ").trim().slice(0, 150) + ext : "";
+      return file ? storage.media(request, file.etag, medium === "video" ? "video/mp4" : "audio/mpeg", name) : json("הקובץ לא נמצא", 404);
     }
     return layout(course.title, `<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">ספריית השיעורים</a><span aria-hidden="true">‹</span><a href="${esc(backblazeCourseLink(category))}">${esc(category)}</a></nav><div class="panel media-panel">
-      ${course.video ? `<h2>צפייה בשיעור</h2><video controls playsinline preload="metadata" src="${esc(backblazeCourseLink(category, courseId, "video"))}"></video>` : ""}
-      <h2>האזנה לשיעור</h2><audio controls preload="metadata" src="${esc(backblazeCourseLink(category, courseId, "audio"))}"></audio></div>`);
+      <h2>צפייה בשיעור (MP4)</h2>
+      ${course.video ? `<video controls playsinline preload="metadata" src="${esc(backblazeCourseLink(category, courseId, "video"))}"></video>
+        <p><a class="button" href="${esc(backblazeCourseLink(category, courseId, "video") + "&download=1")}">הורדת MP4</a></p>` : '<p role="status">אין עדיין קובץ וידאו לשיעור זה.</p>'}
+      <h2>האזנה לשיעור (MP3)</h2>
+      <audio controls preload="metadata" src="${esc(backblazeCourseLink(category, courseId, "audio"))}"></audio>
+      <p><a class="button" href="${esc(backblazeCourseLink(category, courseId, "audio") + "&download=1")}">הורדת MP3</a></p></div>`);
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const folders = await backblazeFolders(storage);
@@ -716,7 +723,7 @@ async function b2Catalogue(request, env, url) {
     const {courses} = await planImport(env, folder, storage, false);
     for (const {code, title, video} of courses) {
       if (!hidden.has(JSON.stringify([folder, code])) && title.toLowerCase().includes(query.toLowerCase())) {
-        rows.push(`<li><a class="card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-title">${esc(title)}</span><small class="lesson-meta">${esc(folder)} · ${video ? "וידאו ושמע" : "שמע"}</small></a></li>`);
+        rows.push(`<li><a class="card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-title">${esc(title)}</span><small class="lesson-meta">${esc(folder)} · ${video ? "MP3 + MP4" : "MP3"}</small></a></li>`);
       }
     }
   }
