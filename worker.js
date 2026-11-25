@@ -94,14 +94,6 @@ function json(message, status = 200) {
   return Response.json({ message }, { status, headers: security });
 }
 
-function page(message, action, label, status = 200) {
-  const form = action ? `<form method="post" action="${action}"><button>${label}</button></form>` : "";
-  return new Response(`<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>אור תורה</title><main><h1>אור תורה</h1><p>${message}</p>${form}<p><a href="/">חזרה לספרייה</a></p></main></html>`, {
-    status,
-    headers: { ...security, "Content-Type": "text/html; charset=utf-8" }
-  });
-}
-
 const hex = (buffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
 const hash = async (input) => hex(await crypto.subtle.digest("SHA-256", encode.encode(input)));
 
@@ -163,87 +155,14 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]);
 }
 
-function parseRange(header, size) {
-  if (!header) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
-  if (!match || (!match[1] && !match[2])) return false;
-  const start = match[1] ? Number(match[1]) : Math.max(0, size - Number(match[2]));
-  const end = match[1] && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
-  return start < size && start <= end ? { offset: start, length: end - start + 1 } : false;
-}
-
-async function serveAudio(request, env, name, contentType = "audio/mpeg") {
-  const info = await env.AUDIO.head(name);
-  if (!info) return json("ההקלטה לא נמצאה.", 404);
-  const range = parseRange(request.headers.get("Range"), info.size);
-  if (range === false) return new Response(null, { status: 416, headers: { ...security, "Content-Range": `bytes */${info.size}` } });
-  const headers = { ...security, "Content-Type": contentType, "Accept-Ranges": "bytes", "Content-Length": String(range?.length ?? info.size) };
-  if (range) headers["Content-Range"] = `bytes ${range.offset}-${range.offset + range.length - 1}/${info.size}`;
-  const status = range ? 206 : 200;
-  if (request.method === "HEAD") return new Response(null, { status, headers });
-  const object = await env.AUDIO.get(name, range ? { range, onlyIf: { etagMatches: info.etag } } : { onlyIf: { etagMatches: info.etag } });
-  if (!object?.body) return json("ההקלטה אינה זמינה כרגע.", 503);
-  return new Response(object.body, { status, headers });
-}
-
-const categories = {
-  'torah': 'פרשת השבוע', 'holidays': 'שבת ומועדים', 'thought': 'מחשבת ישראל',
-  'faith': 'אמונה וידיעה', 'mussar': 'שיעורים בספרי מוסר', 'tefillah': 'תפילה',
-  'halacha': 'שולחן ערוך אורח חיים', 'rambam': 'שיעורים ברמב״ם',
-  'eight-chapters': 'שמונה פרקים לרמב״ם', 'derech-hashem': 'דרך השם',
-  'daat-tevunot': 'דעת תבונות'
-};
-
 const esc = escapeHtml;
 const redirect = (location) => new Response(null, {status:303, headers:{...security, Location:location}});
 function layout(title, content, status = 200) {
   return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | אור תורה</title><link rel="stylesheet" href="/style.css"><style>
   main{padding-block:36px;min-height:70vh}footer{padding-block:24px;border-top:1px solid var(--edge)}h1,h2,p{margin-block:0 16px}h1{font:700 clamp(2rem,6vw,3.5rem)/1.15 var(--display)}form{display:grid;gap:12px;margin-block:18px}label{display:grid;gap:6px}input,select{width:100%;padding:11px;color:var(--text);background:var(--base);border:1px solid var(--edge);border-radius:8px;font:inherit;font-size:16px}button{justify-self:start;cursor:pointer;border:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,185px),1fr));gap:12px;margin-block:22px}.card{display:block;padding:18px;background:#151e2c;border:1px solid var(--edge);border-radius:12px;overflow-wrap:anywhere}.chosen{border-color:var(--gold)}.stack{max-width:720px}ul{padding-inline-start:0;list-style:none}li{margin-block:8px}video,iframe,audio{width:100%;display:block;margin-block:15px}iframe,video{aspect-ratio:16/9;border:0;background:#000}details{margin-block:18px}summary{cursor:pointer}
   </style></head><body><header class="header"><div class="shell nav"><a class="brand" href="/">אור תורה</a><a href="${mailLink}">בקשת גישה</a></div></header><main class="shell"><h1>${esc(title)}</h1>${content}</main>${siteFooter}</body></html>`,
-  {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; frame-src https://www.youtube.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
+  {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"}});
 }
-function categoryOptions(active = "") {
-  return Object.entries(categories).map(([id,title]) => `<option value="${id}" ${id === active ? 'selected' : ''}>${esc(title)}</option>`).join("");
-}
-
-async function catalog(env, url) {
-  const category = url.searchParams.get("category") ?? "";
-  const query = (url.searchParams.get("q") ?? "").trim().slice(0,120);
-  const offset = Math.max(0, Math.min(100000, Number.parseInt(url.searchParams.get("offset"),10) || 0));
-  const medium = url.searchParams.get("media") ?? "";
-  const formats = {video:"שיעורי וידאו",audio:"שיעורי שמע"};
-  const view = Object.hasOwn(formats,medium) ? medium : "";
-  const mediaClause = view === "video" ? "(video_key IS NOT NULL OR youtube IS NOT NULL)" : view === "audio" ? "audio_key IS NOT NULL" : "";
-  const where = [category && "category = ?", query && "instr(lower(title), lower(?)) > 0", mediaClause].filter(Boolean).join(" AND ");
-  const params = [category, query].filter(Boolean);
-  const {results} = category || query ? await env.DB.prepare(`SELECT id,title,category FROM library_courses ${where ? 'WHERE ' + where : ''} ORDER BY title,id LIMIT 51 OFFSET ?`).bind(...params,offset).all() : {results:[]};
-  const urlFor = (media, id="", start=0) => "/?" + new URLSearchParams({media,category:id,q:query,offset:String(start)});
-  const folder = (title, href, active=false) => `<li><a class="card folder ${active?'chosen':''}" href="${esc(href)}"${active?' aria-current="page"':''}><span aria-hidden="true">📁</span><span>${esc(title)}</span><span aria-hidden="true">‹</span></a></li>`;
-  const formatFolders = Object.entries(formats).map(([id,title]) => folder(title,urlFor(id),view===id)).join("");
-  const categoryFolders = Object.entries(categories).map(([id,title]) => folder(title,urlFor(view,id),category===id)).join("");
-  const rows = results.slice(0,50).map(row => `<li><a class="card" href="/cours/${row.id}">${esc(row.title)} <small>· ${esc(categories[row.category] ?? "")}</small></a></li>`).join("");
-  const breadcrumb = view || category ? `<nav aria-label="מיקום בספרייה"><a href="/">כל התיקיות</a>${view ? ` / <a href="${esc(urlFor(view))}">${formats[view]}</a>` : ""}${category ? ` / ${esc(categories[category]??"")}` : ""}</nav>` : "";
-  const showResults = Boolean(category || query);
-  return layout("שיעורי הרב נתן רוטמן", `<style>.folder{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}.folder span:last-child{color:var(--gold);font-size:1.4rem}.folder-tree{max-width:760px}</style><div class="folder-tree"><form method="get"><label>חיפוש שיעור<input type="search" name="q" value="${esc(query)}" maxlength="120" placeholder="חיפוש בספריית השיעורים"></label><input type="hidden" name="media" value="${view}"><label>קטגוריה<select name="category"><option value="">כל הקטגוריות</option>${categoryOptions(category)}</select></label><button class="button gold">חיפוש</button></form>${breadcrumb}
-  ${!view && !showResults ? `<h2>תיקיות</h2><ul>${formatFolders}</ul>` : ""}
-  ${!showResults ? `<h2>${view ? formats[view] : "לפי נושא"}</h2><ul>${categoryFolders}</ul>` : ""}
-  ${showResults ? `<h2>${esc(categories[category] ?? "תוצאות חיפוש")}</h2>${rows ? `<ul>${rows}</ul>` : '<p>אין שיעורים להצגה.</p>'}${offset ? `<a href="${esc(urlFor(view,category,Math.max(0,offset-50)))}">הקודם</a> ` : ''}${results.length > 50 ? `<a href="${esc(urlFor(view,category,offset+50))}">הבא</a>` : ''}` : ""}</div>`);
-
-}
-
-function youtubeId(value) {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:") return null;
-    let id;
-    if (url.hostname === "youtu.be") id = url.pathname.split("/")[1];
-    if (["www.youtube.com","youtube.com","m.youtube.com"].includes(url.hostname)) {
-      id = url.pathname === "/watch" ? url.searchParams.get("v") : /^\/(?:embed|shorts|live)\/([^/]+)$/.exec(url.pathname)?.[1];
-    }
-    return /^[\w-]{11}$/.test(id ?? "") ? id : null;
-  } catch { return null; }
-}
-
 function adminLogin(message = "", status = 200) {
   return layout("ניהול האתר", `<div class="panel stack">${message ? `<p role="alert">${esc(message)}</p>` : ""}<form method="post" action="/admin/login"><label>קוד ניהול<input type="password" name="pin" inputmode="numeric" maxlength="4" autocomplete="current-password" required></label><button class="button gold">כניסה לניהול</button></form></div>`, status);
 }
@@ -254,7 +173,7 @@ async function adminAuthorized(request, origin) {
   return Boolean(m && Number(m[1]) > Date.now()/1000 && await gateSignature(`admin:${origin}:${m[1]}`,m[2]));
 }
 
-async function planImport(env, folder, storage = env.AUDIO, useCatalogue = true) {
+async function planImport(folder, storage) {
   const groups = new Map();
   const notes = [];
   let cursor;
@@ -300,9 +219,6 @@ async function planImport(env, folder, storage = env.AUDIO, useCatalogue = true)
     groups.delete(v.identity);
   }
 
-  const {results} = useCatalogue ? await env.DB.prepare("SELECT id AS code, audio_key, video_key FROM library_courses").all() : {results: []};
-  const known = new Map(results.map(row => [row.code, row]));
-  const knownAudio = new Map(results.map(row => [row.audio_key, row]));
   const courses = [];
   for (const [identity, pair] of groups) {
     if (pair.mp3.length !== 1 || pair.mp4.length > 1) {
@@ -311,14 +227,8 @@ async function planImport(env, folder, storage = env.AUDIO, useCatalogue = true)
     }
     const [audio] = pair.mp3;
     const [video] = pair.mp4;
-    const code = knownAudio.get(audio.key)?.code ?? (await hash(identity)).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5");
-    const current = known.get(code);
-    if (current && (current.audio_key !== audio.key || (current.video_key && video && current.video_key !== video.key))) {
-      notes.push(`${identity} — קוד השיעור כבר משויך לקבצים אחרים`);
-      continue;
-    }
-    const change = current ? (video && !current.video_key ? "video" : "none") : "new";
-    courses.push({code, title: audio.title, audio, video, change, folder: audio.key.slice(0, audio.key.lastIndexOf("/"))});
+    const code = (await hash(identity)).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5");
+    courses.push({code, title: audio.title, audio, video, folder: audio.key.slice(0, audio.key.lastIndexOf("/"))});
   }
   const counts = new Map();
   for (const course of courses) counts.set(course.code, (counts.get(course.code) ?? 0) + 1);
@@ -329,32 +239,6 @@ async function planImport(env, folder, storage = env.AUDIO, useCatalogue = true)
   });
   valid.sort((a, b) => a.audio.key.localeCompare(b.audio.key));
   return {courses: valid, notes, stamp: await hash(JSON.stringify(valid))};
-}
-
-async function bulk(request, env) {
-  const form = request.method === "POST" ? await request.formData().catch(() => null) : null;
-  const selected = String(form?.get("folder")??"");
-  const folder = (selected || String(form?.get("custom_folder")??"")).trim().replace(/\/+$/, "");
-  const id = /^categories\/([^/]+)$/.exec(folder)?.[1];
-  const category = id && Object.hasOwn(categories,id) ? id : String(form?.get("category")??"");
-  const listing = await env.AUDIO.list({prefix:"categories/",delimiter:"/"});
-  const folders = listing.delimitedPrefixes.map(prefix=>prefix.replace(/\/$/,""));
-  const options = folders.filter(path=>Object.hasOwn(categories,path.split("/")[1])).map(path=>
-    `<option value="${esc(path)}" ${path===selected?"selected":""}>${esc(categories[path.split("/")[1]])}</option>`).join("");
-  const valid = folder && folder.length <= 500 && folder.split("/").every(part => part && part !== "." && part !== "..");
-  if (form && (!valid || !Object.hasOwn(categories,category))) return layout("נתוני הייבוא אינם תקינים", '<a href="/admin/import">חזרה לייבוא</a>',400);
-  const plan = form ? await planImport(env,folder) : null;
-  const stamp = plan ? await hash(plan.stamp + ":" + category) : "";
-  const changes = plan?.courses.filter(course => course.change !== "none") ?? [];
-  if (form?.get("action") === "publish" && form.get("stamp") === stamp) {
-    for (let start=0; start<changes.length; start+=40) {
-      await env.DB.batch(changes.slice(start,start+40).map(course => env.DB.prepare(
-        "INSERT INTO library_courses (id,title,category,audio_key,video_key) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET video_key=excluded.video_key WHERE library_courses.video_key IS NULL AND library_courses.audio_key=excluded.audio_key"
-      ).bind(course.code,course.title,category,course.audio.key,course.video?.key??null)));
-    }
-    return redirect("/admin?status=imported");
-  }
-  return layout("ייבוא שיעורים מתיקייה", `<a href="/admin">חזרה לניהול</a><form class="stack" method="post"><label>תיקייה ב־R2<select name="folder"><option value="">בחירת תיקייה</option>${options}</select></label><details ${folder&&!selected?"open":""}><summary>תיקייה אחרת</summary><label>נתיב תיקייה ב־R2<input name="custom_folder" value="${selected?"":esc(folder)}"></label><label>קטגוריה לתיקייה אחרת<select name="category"><option value="">בחירת קטגוריה</option>${categoryOptions(category)}</select></label></details><button class="button gold">סריקת התיקייה</button>${changes.length ? `<input type="hidden" name="stamp" value="${stamp}"><button class="button gold" name="action" value="publish">פרסום ${changes.length} שיעורים</button>` : ''}</form>${plan ? `<p>${plan.courses.length} שיעורים נמצאו.</p><ul>${plan.courses.map(c=>`<li>${esc(c.title)} · ${c.video ? 'וידאו ושמע' : 'שמע'}</li>`).join("")}${plan.notes.map(note=>`<li>${esc(note)}</li>`).join("")}</ul>` : ''}`);
 }
 
 async function admin(request, env, url) {
@@ -379,64 +263,13 @@ async function admin(request, env, url) {
     return new Response(null, {status:303, headers:{...security, Location:"/admin",
       "Set-Cookie":`${adminCookie}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`}});
   }
-  if (route === "/admin" && request.method === "GET" && !url.searchParams.has("legacy") && backblazeKeyId(env) && env.B2_APPLICATION_KEY) {
-    return backblazeAdmin(env, url);
+  if (!(backblazeKeyId(env) && env.B2_APPLICATION_KEY)) {
+    return layout("ניהול הספרייה", '<p role="alert">Backblaze אינו מחובר. הוסיפו את B2_KEY_ID ו־B2_APPLICATION_KEY בהגדרות Cloudflare.</p>', 503);
   }
   if (route === "/admin/course-visibility" && request.method === "POST") return setCourseVisibility(request, env);
   if (route === "/admin/backblaze-upload" && request.method === "POST") return addBackblazeCourse(request, env);
-  if (route === "/admin/import") return bulk(request,env);
-  if (request.method === "POST" && route === "/admin/upload") {
-    if (Number(request.headers.get("Content-Length")) > 48*1024*1024) return layout("הקובץ גדול מדי", '<p>העלו קבצים גדולים ל־R2 והדביקו את הנתיב שלהם בטופס.</p><a href="/admin">חזרה לניהול</a>',413);
-    const form = await request.formData().catch(() => null);
-    if (!form) return json("טופס לא תקין",400);
-    const title = String(form.get("title")??"").trim();
-    const category = form.get("category");
-    const youtube = String(form.get("youtube")??"").trim();
-    const yt = youtube && youtubeId(youtube);
-    const id = crypto.randomUUID();
-    const stored = [];
-    try {
-      if (!title || title.length > 220 || !Object.hasOwn(categories,category) || (youtube && !yt)) throw new Error("בדקו את שם השיעור, הקטגוריה וקישור YouTube.");
-      const source = async (field, extension, type) => {
-        const file = form.get(field);
-        const existing = String(form.get(field+"_key")??"").trim();
-        if (existing && file?.size) throw new Error("בחרו קובץ או נתיב R2 לכל סוג מדיה.");
-        if (existing) {
-          if (!existing.toLowerCase().endsWith(extension) || !await env.AUDIO.head(existing)) throw new Error("נתיב הקובץ ב־R2 לא נמצא או אינו תקין.");
-          return existing;
-        }
-        if (!file?.size) return null;
-        if (!file.name.toLowerCase().endsWith(extension) || file.size > 48*1024*1024) throw new Error("סוג הקובץ או הגודל שלו אינם מתאימים.");
-        const key = `categories/${category}/${id}${extension}`;
-        await env.AUDIO.put(key,await file.arrayBuffer(),{httpMetadata:{contentType:type}});
-        stored.push(key);
-        return key;
-      };
-      const audio = await source("mp3",".mp3","audio/mpeg");
-      const video = await source("mp4",".mp4","video/mp4");
-      if (!audio && !video && !yt) throw new Error("יש להוסיף לפחות מקור מדיה אחד.");
-      await env.DB.prepare("INSERT INTO library_courses (id,title,category,audio_key,video_key,youtube) VALUES (?,?,?,?,?,?)").bind(id,title,category,audio,video,yt||null).run();
-      return redirect("/admin?status=added");
-    } catch (error) {
-      await Promise.allSettled(stored.map(key => env.AUDIO.delete(key)));
-      return layout("לא ניתן להוסיף את השיעור",`<p>${esc(error.message)}</p><a href="/admin">חזרה לניהול</a>`,400);
-    }
-  }
-  if (request.method === "POST" && route === "/admin/delete") {
-    const form = await request.formData();
-    await env.DB.prepare("DELETE FROM library_courses WHERE id=?").bind(String(form.get("id")??"")).run();
-    return redirect("/admin?status=removed");
-  }
-  if (request.method !== "GET") return json("פעולה לא זמינה",405);
-  const filter = (url.searchParams.get("q")??"").slice(0,120);
-  const offset = Math.max(0, Number.parseInt(url.searchParams.get("offset"),10)||0);
-  const {results} = await env.DB.prepare("SELECT id,title FROM library_courses WHERE instr(lower(title),lower(?))>0 OR ?='' ORDER BY title,id LIMIT 51 OFFSET ?").bind(filter,filter,offset).all();
-  const rows = results.slice(0,50).map(row => `<li class="card"><a href="/cours/${row.id}">${esc(row.title)}</a><details><summary>מחיקת שיעור</summary><form method="post" action="/admin/delete"><input type="hidden" name="id" value="${row.id}"><button class="button gold">אישור הסרה מהאתר</button></form></details></li>`).join("");
-  return layout("ניהול השיעורים", `<div class="stack">${url.searchParams.has("status") ? '<p role="status">השינוי נשמר.</p>' : ''}<h2>הוספת שיעור</h2><p><a href="/admin/import">ייבוא שיעורים מתיקייה</a></p><form method="post" action="/admin/upload" enctype="multipart/form-data">
-  <label>שם השיעור<input name="title" maxlength="220" required></label><label>קטגוריה<select name="category" required><option value="">בחירת קטגוריה</option>${categoryOptions()}</select></label>
-  <label>קובץ MP3<input name="mp3" type="file" accept=".mp3,audio/mpeg"></label><label>קובץ MP4<input name="mp4" type="file" accept=".mp4,video/mp4"></label><label>קישור YouTube<input name="youtube" type="url" dir="ltr"></label>
-  <details><summary>שימוש בקבצים שכבר נמצאים ב־R2</summary><label>נתיב MP3<input name="mp3_key" dir="ltr"></label><label>נתיב MP4<input name="mp4_key" dir="ltr"></label></details><p>העלאה ישירה עד 48 MiB לשני הקבצים יחד. לקבצים גדולים השתמשו בנתיב R2.</p><button class="button gold">הוספת שיעור</button></form>
-  <h2>שיעורים קיימים</h2><form method="get" action="/admin"><label>חיפוש שיעור<input name="q" value="${esc(filter)}"></label><button class="button gold">חיפוש</button></form><ul>${rows}</ul>${offset ? `<a href="/admin?${esc(new URLSearchParams({q:filter,offset:String(Math.max(0, offset-50))}))}">הקודם</a> ` : ''}${results.length>50 ? `<a href="/admin?${esc(new URLSearchParams({q:filter,offset:String(offset+50)}))}">הבא</a>` : ''}</div>`);
+  if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
+  return json("פעולה לא זמינה", 405);
 }
 
 
@@ -612,7 +445,7 @@ async function setCourseVisibility(request, env) {
       (action !== "hide" && action !== "restore")) return json("נתוני השיעור אינם תקינים", 400);
   try {
     const storage = await backblaze(env);
-    const {courses} = await planImport(env, folder, storage, false);
+    const {courses} = await planImport(folder, storage);
     if (!courses.some(item => item.code === course)) return json("השיעור לא נמצא", 404);
     const sql = action === "hide"
       ? "INSERT INTO backblaze_hidden_courses (folder, course_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
@@ -659,7 +492,7 @@ async function backblazeAdmin(env, url) {
     const form = `<form method="get" class="library-search"><label>קטגוריה לבדיקה<select name="folder" required><option value="">בחירת קטגוריה</option>${options}</select></label><button class="button gold">בדיקת שיעורים</button></form>`;
     let result = `<ul class="folder-grid">${folders.map(folder => `<li><a class="card folder-card" href="/admin?${esc(new URLSearchParams({folder}))}">${folderIcon}${esc(folder)}</a></li>`).join("")}</ul>`;
     if (folders.includes(current)) {
-      const {courses, notes} = await planImport(env, current, storage, false);
+      const {courses, notes} = await planImport(current, storage);
       const {results: hiddenRows} = await env.DB.prepare("SELECT course_id FROM backblaze_hidden_courses WHERE folder = ?").bind(current).all();
       const hiddenIds = new Set(hiddenRows.map(row => row.course_id));
       const published = courses.filter(course => !hiddenIds.has(course.code));
@@ -671,7 +504,7 @@ async function backblazeAdmin(env, url) {
         ${hidden.length ? `<details class="panel"><summary>שיעורים שהוסרו (${hidden.length})</summary><ul class="lesson-list">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
         ${notes.length ? `<details class="panel"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}`;
     }
-    return layout("ניהול הספרייה", actions + status + form + result + howTo + '<p><a href="/admin?legacy=1">ניהול הספרייה הישנה (R2)</a></p>');
+    return layout("ניהול הספרייה", actions + status + form + result + howTo);
   } catch {
     return layout("ניהול הספרייה", actions + '<p role="alert">לא ניתן לטעון את Backblaze כרגע. <a href="/admin">ניסיון נוסף</a></p>' + howTo, 502);
   }
@@ -686,7 +519,7 @@ async function b2Catalogue(request, env, url) {
   if (courseId && category) {
     const hidden = await env.DB.prepare("SELECT 1 FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(category, courseId).first();
     if (hidden) return medium ? json("הקובץ לא נמצא", 404) : layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
-    const {courses} = await planImport(env, category, storage, false);
+    const {courses} = await planImport(category, storage);
     const course = courses.find(item => item.code === courseId);
     if (!course) return layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
     if (medium) {
@@ -720,7 +553,7 @@ async function b2Catalogue(request, env, url) {
   const hidden = new Set(hiddenRows.map(row => JSON.stringify([row.folder, row.course_id])));
   const rows = [];
   for (const folder of category ? [category] : folders) {
-    const {courses} = await planImport(env, folder, storage, false);
+    const {courses} = await planImport(folder, storage);
     for (const {code, title, video} of courses) {
       if (!hidden.has(JSON.stringify([folder, code])) && title.toLowerCase().includes(query.toLowerCase())) {
         rows.push(`<li><a class="card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-title">${esc(title)}</span><small class="lesson-meta">${esc(folder)} · ${video ? "MP3 + MP4" : "MP3"}</small></a></li>`);
@@ -754,34 +587,17 @@ export default {
     }
     if (path === "/access/code" && request.method === "POST") return enterGate(request,url.origin);
     if (path === "/access") return gatePage();
-    const match = /^\/cours(?:-(audio|video))?\/([a-f0-9-]{36})$/.exec(path);
-    if (path !== "/" && !match) return layout("העמוד לא נמצא",'<a href="/">חזרה לספרייה</a>',404);
+    if (path !== "/") return layout("העמוד לא נמצא",'<a href="/">חזרה לספרייה</a>',404);
     if (!await gateAuthorized(request,url.origin)) return gatePage();
-    if (!match && backblazeKeyId(env) && env.B2_APPLICATION_KEY) {
-      if (!["GET", "HEAD"].includes(request.method)) return new Response(null, {status: 405, headers: {Allow: "GET, HEAD"}});
-      try {
-        return await b2Catalogue(request, env, url);
-      } catch (error) {
-        const issue = /^(?:(authorize|list|media)-(?:[0-9]{3}|network|format)|invalid-secret-format)$/.test(error.message) ? error.message : "upstream-error";
-        const fallback = url.searchParams.has("folder")
-          ? layout("הספרייה אינה זמינה כרגע", '<a href="/">חזרה לספרייה</a>', 502)
-          : await catalog(env, url);
-        const headers = new Headers(fallback.headers);
-        headers.set("X-Or-Torah-Storage", issue);
-        return new Response(fallback.body, {status: fallback.status, headers});
-      }
+    if (!["GET", "HEAD"].includes(request.method)) return new Response(null, {status: 405, headers: {Allow: "GET, HEAD"}});
+    if (!(backblazeKeyId(env) && env.B2_APPLICATION_KEY)) return layout("הספרייה אינה זמינה כרגע", "", 503);
+    try {
+      return await b2Catalogue(request, env, url);
+    } catch (error) {
+      const issue = /^(?:(authorize|list|media)-(?:[0-9]{3}|network|format)|invalid-(?:key-id|application-key)-format)$/.test(error.message) ? error.message : "upstream-error";
+      const response = layout("הספרייה אינה זמינה כרגע", '<a href="/">ניסיון נוסף</a>', 502);
+      response.headers.set("X-Or-Torah-Storage", issue);
+      return response;
     }
-    if (!match) return catalog(env,url);
-    const course = await env.DB.prepare("SELECT * FROM library_courses WHERE id=?").bind(match[2]).first();
-    if (!course) return layout("השיעור לא נמצא",'<a href="/">חזרה לספרייה</a>',404);
-    if (match[1]) {
-      const video = match[1] === "video";
-      const key = video ? course.video_key : course.audio_key;
-      return key ? serveAudio(request, env, key, video ? "video/mp4" : "audio/mpeg") : json("הקובץ לא נמצא",404);
-    }
-    return layout(course.title,`<div class="stack"><a href="/?category=${course.category}">${esc(categories[course.category])}</a>
-    ${course.video_key ? `<video controls playsinline preload="metadata" src="/cours-video/${course.id}"></video>` : ''}
-    ${course.youtube ? `<iframe src="https://www.youtube.com/embed/${course.youtube}?rel=0" title="וידאו ב־YouTube" loading="lazy" allowfullscreen></iframe>` : ''}
-    ${course.audio_key ? `<h2>האזנה לשיעור</h2><audio controls preload="metadata" src="/cours-audio/${course.id}"></audio>` : ''}</div>`);
   }
 };
