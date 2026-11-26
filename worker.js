@@ -395,6 +395,9 @@ function similarFolder(a, b) {
 
 // Same word, or a one-letter spelling difference inside a longer word (ידים / ידיים).
 const sameToken = (x, y) => x === y || (x.length >= 4 && y.length >= 4 && !/\d/.test(x + y) && editDistance(x, y) <= 1);
+const prefixLetters = new Set(["ב", "ה", "ו", "ל", "כ", "מ", "ש"]);
+const looseToken = (x, y) => sameToken(x, y) || (x.length >= 4 && prefixLetters.has(x[0]) && sameToken(x.slice(1), y)) || (y.length >= 4 && prefixLetters.has(y[0]) && sameToken(x, y.slice(1)));
+const genericWords = new Set(["ביאור", "הלכות", "הלכה", "שיעור", "מצות", "פרק", "חלק", "המשך", "סימן", "פרשת", "הרב", "שמע"]);
 const isIndexToken = token => token.length <= 3 && /^(?:[\u05d0-\u05ea]{1,3}|\d{1,3})$/.test(token);
 
 // Two titles are "the same lesson" when:
@@ -409,6 +412,11 @@ function titleMatch(a, b) {
   if (!isIndexToken(short[0]) || short[0] !== long[0]) return false;
   const rest = short.slice(1), pool = long.slice(1);
   if (!rest.length || rest.join("").length < 4) return false;
+  // Same lesson number and a significant shared word (e.g. "זמנה"), without conflicting part markers (א / ב / 2).
+  const smallsOf = list => list.filter(token => token.length <= 2);
+  const sa = smallsOf(rest), sb = smallsOf(pool);
+  const markersConflict = sa.length && sb.length && !sa.some(token => sb.includes(token));
+  if (!markersConflict && rest.some(token => token.length >= 4 && !genericWords.has(token) && pool.some(other => looseToken(token, other)))) return true;
   let at = 0;
   for (const token of rest) { const found = pool.findIndex((candidate, index) => index >= at && sameToken(token, candidate)); if (found < 0) { at = -1; break; } at = found + 1; }
   if (at >= 0) return true;
