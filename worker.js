@@ -485,8 +485,11 @@ async function planImport(folder, storage) {
       const number = /(?:^|[\s_\-[\u2013\u2014])([0-9]{5,14})\]?$/.exec(stem);
       const identity = `${directory}${number ? number[1] : stem.normalize("NFC").toLowerCase()}`;
       const pair = groups.get(identity) ?? {number: number?.[1], mp3: [], mp4: []};
-      const title = (number ? stem.slice(0, number.index).trim() : stem) || stem;
-      pair[extension.toLowerCase()].push({key, etag, title, directory, number: number?.[1]});
+      const separate = /\s*\[(?:נפרד|solo)\]\s*/i;
+      const solo = separate.test(stem);
+      const shown = solo ? stem.replace(separate, " ").trim() : stem;
+      const title = (number && !solo ? shown.slice(0, number.index).trim() : shown) || shown;
+      pair[extension.toLowerCase()].push({key, etag, title, directory, number: number?.[1], solo});
       groups.set(identity, pair);
     }
     cursor = page.truncated ? page.cursor : undefined;
@@ -496,6 +499,7 @@ async function planImport(folder, storage) {
   for (const [identity, pair] of groups) {
     if (pair.mp3.length + pair.mp4.length !== 1) continue;
     const file = pair.mp3[0] ?? pair.mp4[0];
+    if (file.solo) continue;
     const comma = file.title.indexOf(",");
     if (comma < 0) continue;
     const prefix = file.title.slice(0, comma).normalize("NFC").toLowerCase().trim().replace(/\s+/g, " ");
@@ -528,14 +532,14 @@ async function planImport(folder, storage) {
     const [video] = pair.mp4;
     const main = audio ?? video;
     const code = (await hash(identity)).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5");
-    courses.push({code, title: main.title, audio, video, folder: main.key.slice(0, main.key.lastIndexOf("/"))});
+    courses.push({code, title: main.title, audio, video, solo: Boolean(main.solo), folder: main.key.slice(0, main.key.lastIndexOf("/"))});
   }
   // Fuzzy pass: one MP3-only course and one MP4-only course in the same (similar) folder whose titles start the same are one lesson.
   const trails = canonicalTrails(courses);
   courses.forEach((course, index) => { course.trail = trails[index]; });
   const buckets = new Map();
   for (const course of courses) {
-    if (Boolean(course.audio) === Boolean(course.video)) continue;
+    if (course.solo || Boolean(course.audio) === Boolean(course.video)) continue;
     const key = course.trail.join("/");
     buckets.set(key, [...(buckets.get(key) ?? []), course]);
   }
@@ -556,7 +560,7 @@ async function planImport(folder, storage) {
   // Only identical/clearly matching titles, or the single leftover pair of that folder, are joined.
   const leafGroups = [];
   for (const course of courses) {
-    if (merged.has(course) || Boolean(course.audio) === Boolean(course.video) || !course.trail.length) continue;
+    if (course.solo || merged.has(course) || Boolean(course.audio) === Boolean(course.video) || !course.trail.length) continue;
     const leaf = course.trail[course.trail.length - 1];
     let group = leafGroups.find(entry => similarFolder(entry.leaf, leaf));
     if (!group) { group = {leaf, items: []}; leafGroups.push(group); }
