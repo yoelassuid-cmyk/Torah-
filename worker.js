@@ -158,6 +158,8 @@ details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 
 .gate-card .button { width: 100%; }
 .gate-error { color: var(--bad); }
 
+.dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--muted); }
+.dropzone.over { border-color: var(--gold); background: var(--surface2); }
 .site-footer { border-top: 1px solid var(--line); padding-block: 22px 30px; color: var(--muted); font-size: .9rem; text-align: center; }
 
 @media (max-width: 680px) {
@@ -573,6 +575,7 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
   return layout("הוספת שיעור", `<div class="panel stack">
     ${error ? notice(error, "error") : ""}
     ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה. בינתיים ניתן להעלות ישירות ל־Backblaze.", "info")}
+    <p><a href="/admin?add=multi">להעלות הרבה שיעורים בבת אחת ›</a></p>
     <form class="form-grid" action="/admin/backblaze-upload" method="post" enctype="multipart/form-data" data-direct-upload>
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
         <input type="hidden" name="upload_id" value="${crypto.randomUUID()}">
@@ -684,6 +687,192 @@ async function prepareUpload(request, env) {
   }
 }
 
+const uploadMultiScript = `(() => {
+  const form = document.querySelector("form[data-multi-upload]");
+  if (!form) return;
+  const input = form.querySelector("[data-files]");
+  const drop = form.querySelector("[data-drop]");
+  const list = form.querySelector("[data-list]");
+  const summary = form.querySelector("[data-summary]");
+  const bar = form.querySelector("[data-progress]");
+  const status = form.querySelector("[data-status]");
+  const start = form.querySelector("[data-start]");
+  const picker = form.querySelector("select[name=folder]");
+  const batch = crypto.randomUUID();
+  const LIMIT = 4.5 * 1024 * 1024 * 1024;
+  const numberRe = /(?:^|[\\s_\\-[\\u2013\\u2014])([0-9]{5,14})\\]?$/;
+  const norm = text => text.normalize("NFC").trim().replace(/\\s+/g, " ").toLowerCase();
+  const stemOf = name => name.replace(/\\.(mp3|mp4)$/i, "");
+  const nice = stem => { const m = numberRe.exec(stem); return ((m ? stem.slice(0, m.index).trim() : stem) || stem); };
+  const mb = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(1) + "GB" : (bytes / 1048576).toFixed(0) + "MB";
+  let picked = [];
+  let courses = [];
+  let orphans = [];
+  let running = false;
+
+  const note = (text, kind) => { status.textContent = text; status.className = "notice" + (kind ? " " + kind : ""); status.hidden = !text; };
+
+  function group() {
+    const map = new Map();
+    const ignored = [];
+    for (const file of picked) {
+      const kind = /\\.mp3$/i.test(file.name) ? "mp3" : /\\.mp4$/i.test(file.name) ? "mp4" : null;
+      if (!kind) { ignored.push(file.name); continue; }
+      const stem = stemOf(file.name);
+      const num = numberRe.exec(stem);
+      const key = num ? "n:" + num[1] : "s:" + norm(stem);
+      const entry = map.get(key) || {key, mp3: null, mp4: null, dupe: false};
+      if (entry[kind]) entry.dupe = true; else entry[kind] = file;
+      map.set(key, entry);
+    }
+    const old = new Map(courses.map(course => [course.key, course]));
+    courses = []; orphans = [];
+    for (const entry of map.values()) {
+      if (!entry.mp3) { orphans.push(entry); continue; }
+      const prev = old.get(entry.key);
+      const stem = stemOf(entry.mp3.name);
+      let problem = "";
+      if (entry.dupe) problem = "קבצים כפולים באותו שם";
+      else if (stem.length > 180 || /[/\\\\]/.test(stem)) problem = "שם הקובץ ארוך או לא תקין";
+      else if (entry.mp3.size > LIMIT || (entry.mp4 && entry.mp4.size > LIMIT)) problem = "הקובץ גדול מדי";
+      courses.push({key: entry.key, stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem, state: prev && prev.state === "done" ? "done" : "pending", error: ""});
+    }
+    courses.sort((a, b) => a.title.localeCompare(b.title, "he"));
+    return ignored;
+  }
+
+  const stateText = course => course.problem ? course.problem : course.state === "done" ? "הועלה ✓" : course.state === "busy" ? "מעלה…" : course.state === "failed" ? "נכשל: " + course.error : "ממתין";
+
+  function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
+
+  function render(ignored) {
+    list.replaceChildren();
+    for (const course of courses) {
+      const row = el("li", "lesson-card");
+      const main = el("span", "lesson-main");
+      main.append(el("span", "lesson-title", course.title), el("span", "lesson-meta", stateText(course)));
+      const badges = el("span", "lesson-badges");
+      badges.append(el("span", "badge", "MP3"), el("span", course.mp4 ? "badge" : "badge warn", course.mp4 ? "MP4" : "ללא MP4"));
+      row.append(main, badges);
+      if (!running && course.state !== "done") {
+        const remove = el("button", "button small", "הסרה"); remove.type = "button";
+        remove.addEventListener("click", () => { picked = picked.filter(file => file !== course.mp3 && file !== course.mp4); update(); });
+        row.append(remove);
+      }
+      list.append(row);
+    }
+    for (const entry of orphans) {
+      const row = el("li", "lesson-card");
+      const main = el("span", "lesson-main");
+      main.append(el("span", "lesson-title", nice(stemOf(entry.mp4.name))), el("span", "lesson-meta", "MP4 בלי MP3 מתאים: לא יועלה"));
+      row.append(main, el("span", "badge warn", "חסר MP3"));
+      list.append(row);
+    }
+    const ready = courses.filter(course => !course.problem && course.state !== "done").length;
+    const withVideo = courses.filter(course => course.mp4).length;
+    summary.textContent = courses.length ? courses.length + " שיעורים · " + withVideo + " עם MP4" + (orphans.length ? " · " + orphans.length + " ללא MP3" : "") + (ignored.length ? " · " + ignored.length + " קבצים התעלמו" : "") : "";
+    start.disabled = running || !ready;
+    start.textContent = courses.some(course => course.state === "failed") ? "נסו שוב את הנכשלים" : ready ? "העלאת " + ready + " שיעורים" : "העלאה";
+  }
+
+  function update() { render(group()); }
+
+  function addFiles(files) {
+    for (const file of files) if (!picked.some(item => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) picked.push(file);
+    update();
+  }
+  input.addEventListener("change", () => { addFiles(Array.from(input.files)); input.value = ""; });
+  ["dragenter", "dragover"].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", event => addFiles(Array.from(event.dataTransfer.files)));
+
+  const encodeName = name => name.split("/").map(encodeURIComponent).join("/");
+  const send = (target, file, progress) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", target.uploadUrl);
+    xhr.setRequestHeader("Authorization", target.token);
+    xhr.setRequestHeader("X-Bz-File-Name", encodeName(target.fileName));
+    xhr.setRequestHeader("Content-Type", target.contentType);
+    xhr.setRequestHeader("X-Bz-Content-Sha1", "do_not_verify");
+    xhr.upload.onprogress = event => progress(event.loaded);
+    xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("HTTP " + xhr.status));
+    xhr.onerror = () => reject(new Error("network"));
+    xhr.send(file);
+  });
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const folder = String(picker.value || "").trim();
+    if (!folder) return note("יש לבחור קטגוריה.", "error");
+    const todo = courses.filter(course => !course.problem && course.state !== "done");
+    if (!todo.length) return;
+    running = true; window.onbeforeunload = () => "ההעלאה בעיצומה";
+    bar.hidden = false; bar.value = 0; note("");
+    const total = todo.reduce((sum, course) => sum + course.mp3.size + (course.mp4 ? course.mp4.size : 0), 0);
+    let done = 0;
+    for (const course of todo) {
+      course.state = "busy"; course.error = ""; render([]);
+      const files = [{kind: "audio", file: course.mp3}];
+      if (course.mp4) files.unshift({kind: "video", file: course.mp4});
+      try {
+        const prepared = await fetch("/admin/upload-url", {method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({folder, title: course.stem, upload_id: batch, files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})});
+        const plan = await prepared.json().catch(() => ({}));
+        if (!prepared.ok) throw new Error(plan.message || "prepare");
+        let courseDone = 0;
+        for (const item of files) {
+          const target = plan.files.find(entry => entry.kind === item.kind);
+          await send(target, item.file, loaded => { bar.value = Math.round(((done + courseDone + loaded) / total) * 100); });
+          courseDone += item.file.size;
+        }
+        done += courseDone; course.state = "done";
+      } catch (error) {
+        done += course.mp3.size + (course.mp4 ? course.mp4.size : 0);
+        course.state = "failed"; course.error = error.message === "network" ? "חיבור או CORS" : error.message;
+      }
+      render([]);
+    }
+    running = false; window.onbeforeunload = null;
+    const failed = courses.filter(course => course.state === "failed").length;
+    const okCount = courses.filter(course => course.state === "done").length;
+    bar.value = 100;
+    if (failed) note(okCount + " שיעורים הועלו, " + failed + " נכשלו. אפשר ללחוץ ״נסו שוב״.", "error");
+    else { note("כל " + okCount + " השיעורים הועלו בהצלחה.");
+      const link = el("a", "button gold", "מעבר לקטגוריה"); link.href = "/admin?" + new URLSearchParams({folder}); link.style.marginBlockStart = "12px"; status.append(" ", link); }
+    render([]);
+  });
+  update();
+})();
+`;
+
+async function courseMultiForm(env, current, status = 200) {
+  const enabled = uploadReady(env);
+  let known = [];
+  try {
+    const rules = await accessRules(env);
+    known = [...new Set([...await backblazeFolders(await backblaze(env)), ...rules.keys()])].sort((a, b) => a.localeCompare(b, "he"));
+  } catch {}
+  const options = known.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
+  return layout("הוספת כמה שיעורים", `<div class="panel">
+    ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה.", "info")}
+    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ.</p>
+    <form class="form-grid" data-multi-upload>
+      <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
+        <label>קטגוריה<select name="folder" required><option value="">בחירת קטגוריה</option>${options}</select></label>
+        ${known.length ? "" : '<p class="notice info">אין עדיין קטגוריות. צרו קטגוריה בדף הניהול קודם.</p>'}
+        <div class="dropzone" data-drop><p style="margin:0 0 12px">גררו לכאן את הקבצים, או בחרו אותם</p>
+          <input type="file" multiple accept=".mp3,.mp4,audio/mpeg,video/mp4" data-files></div>
+        <p data-summary style="margin:0"></p>
+        <ul class="lesson-list" data-list></ul>
+        <progress data-progress hidden max="100" value="0" style="width:100%"></progress>
+        <p data-status role="status" hidden></p>
+        <button class="button gold" data-start disabled>העלאה</button>
+      </fieldset>
+    </form>
+    <p style="margin-block:16px 0">שיעור בודד? <a href="/admin?add=1${current ? "&amp;folder=" + encodeURIComponent(current) : ""}">הוספת שיעור אחד</a></p>
+  </div>`, status, {admin: true, script: "/upload-multi.js"});
+}
+
 async function addBackblazeCourse(request, env) {
   if (!uploadReady(env)) return courseUploadForm(env, "", "", 503);
   const tooLarge = () => courseUploadForm(env, "", "הקבצים גדולים מדי להעלאה מהאתר.", 413);
@@ -778,6 +967,7 @@ const adminHref = params => "/admin?" + new URLSearchParams(params);
 
 async function backblazeAdmin(env, url) {
   const current = url.searchParams.get("folder") ?? "";
+  if (url.searchParams.get("add") === "multi") return courseMultiForm(env, current);
   if (url.searchParams.has("add")) {
     let check = "";
     if (uploadReady(env) && url.searchParams.has("check")) {
@@ -790,7 +980,7 @@ async function backblazeAdmin(env, url) {
     }
     return courseUploadForm(env, current, "", 200, check);
   }
-  const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=1">+ הוספת שיעור</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
+  const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=multi">+ הוספת כמה שיעורים</a><a class="button" href="/admin?add=1">+ שיעור אחד</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
   const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. שיעור בלי MP4 מסומן ״חסר MP4״.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
@@ -825,7 +1015,7 @@ async function backblazeAdmin(env, url) {
     const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
     const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
     const unset = rules.has(current) ? "" : notice("הקטגוריה הזו מוסתרת מהאתר. בחרו ״ציבורית״ או ״מוגנת בקוד״ ולחצו ״שמירה״ כדי שהשיעורים יופיעו.", "error");
-    return layout(current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + accessPanel(current, rules.get(current)) + `
+    return layout(current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current}))) + accessPanel(current, rules.get(current)) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat${missing ? " warn" : ""}"><b>${missing}</b><span>חסר MP4</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${onlyMissing ? '<input type="hidden" name="missing" value="1">' : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !onlyMissing)}${chip(`חסר MP4 (${missing})`, {q, missing: 1}, onlyMissing)}</div>
@@ -925,6 +1115,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     if (path === "/style.css") return new Response(siteStyles, {headers:{"Content-Type":"text/css; charset=utf-8", "Cache-Control":"no-cache"}});
+    if (path === "/upload-multi.js") return new Response(uploadMultiScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/upload.js") return new Response(uploadScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     await ensureSchema(env);
     if (path === "/admin" || path.startsWith("/admin/")) {
