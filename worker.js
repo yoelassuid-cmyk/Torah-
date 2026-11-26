@@ -325,7 +325,7 @@ function layout(title, content, status = 200, opts = {}) {
 }
 
 const notice = (text, type = "ok") => `<p class="notice ${type}" role="${type === "error" ? "alert" : "status"}">${esc(text)}</p>`;
-const badges = video => `<span class="badge">MP3</span>${video ? '<span class="badge">MP4</span>' : '<span class="badge warn">חסר MP4</span>'}`;
+const badges = (audio, video) => `${audio ? '<span class="badge">MP3</span>' : ""}${video ? '<span class="badge">MP4</span>' : ""}`;
 
 function adminLogin(message = "", status = 200) {
   return layout("כניסה לניהול", `<div class="panel stack">${message ? notice(message, "error") : ""}<form class="form-grid" method="post" action="/admin/login"><label>קוד ניהול<input type="password" name="pin" inputmode="numeric" maxlength="4" autocomplete="current-password" dir="ltr" required></label><button class="button gold">כניסה</button></form></div>`, status, {bare: true});
@@ -385,23 +385,24 @@ async function planImport(folder, storage) {
 
   const courses = [];
   for (const [identity, pair] of groups) {
-    if (pair.mp3.length !== 1 || pair.mp4.length > 1) {
-      notes.push(`${identity} — ${pair.mp3.length ? "נמצאו קבצים כפולים" : "חסר קובץ MP3"}`);
+    if (pair.mp3.length > 1 || pair.mp4.length > 1) {
+      notes.push(`${identity} — נמצאו קבצים כפולים`);
       continue;
     }
     const [audio] = pair.mp3;
     const [video] = pair.mp4;
+    const main = audio ?? video;
     const code = (await hash(identity)).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5");
-    courses.push({code, title: audio.title, audio, video, folder: audio.key.slice(0, audio.key.lastIndexOf("/"))});
+    courses.push({code, title: main.title, audio, video, folder: main.key.slice(0, main.key.lastIndexOf("/"))});
   }
   const counts = new Map();
   for (const course of courses) counts.set(course.code, (counts.get(course.code) ?? 0) + 1);
   const valid = courses.filter(course => {
     if (counts.get(course.code) === 1) return true;
-    notes.push(`${course.audio.key} — אותו קוד מופיע ביותר מתיקייה אחת`);
+    notes.push(`${(course.audio ?? course.video).key} — אותו קוד מופיע ביותר מתיקייה אחת`);
     return false;
   });
-  valid.sort((a, b) => a.audio.key.localeCompare(b.audio.key));
+  valid.sort((a, b) => (a.audio ?? a.video).key.localeCompare((b.audio ?? b.video).key));
   return {courses: valid, notes, stamp: await hash(JSON.stringify(valid))};
 }
 
@@ -582,8 +583,8 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
         <label>כותרת השיעור<input name="title" maxlength="180" required></label>
         <label>קטגוריה<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label>
         <label>או קטגוריה חדשה<input name="new_folder" maxlength="120" placeholder="שם הקטגוריה החדשה"></label>
-        <label>קובץ שמע MP3<input type="file" name="audio" accept=".mp3,audio/mpeg" required></label>
-        <label>קובץ וידאו MP4 (אפשר להוסיף אחר כך)<input type="file" name="video" accept=".mp4,video/mp4"></label>
+        <label>קובץ שמע MP3 (אפשר גם בלי)<input type="file" name="audio" accept=".mp3,audio/mpeg"></label>
+        <label>קובץ וידאו MP4 (אפשר גם בלי)<input type="file" name="video" accept=".mp4,video/mp4"></label>
         <progress data-progress hidden max="100" value="0" style="width:100%"></progress><p data-status role="status" hidden></p>
         <p>אפשר להעלות קבצים גדולים. ההעלאה נשלחת ישירות ל־Backblaze: השאירו את המסך דלוק עד שהיא מסתיימת. להעלאה של הרבה שיעורים, השתמשו ב־rclone.</p>
         <button class="button gold">פרסום השיעור</button>
@@ -622,9 +623,10 @@ const uploadScript = `(() => {
     const title = String(data.get("title") || "").trim();
     const folder = String(data.get("new_folder") || "").trim() || String(data.get("folder") || "").trim();
     if (!title || !folder) return note("יש למלא כותרת ולבחור קטגוריה.", "error");
-    if (!audio || !audio.size) return note("יש לבחור קובץ MP3.", "error");
-    const files = [{kind: "audio", file: audio}];
-    if (video && video.size) files.unshift({kind: "video", file: video});
+    const files = [];
+    if (video && video.size) files.push({kind: "video", file: video});
+    if (audio && audio.size) files.push({kind: "audio", file: audio});
+    if (!files.length) return note("יש לבחור לפחות קובץ אחד: MP3 או MP4.", "error");
     button.disabled = true;
     window.onbeforeunload = () => "ההעלאה בעיצומה";
     bar.hidden = false; bar.value = 0;
@@ -669,7 +671,7 @@ async function prepareUpload(request, env) {
   const items = Array.isArray(body?.files) ? body.files : [];
   const limit = 4.5 * 1024 ** 3;
   const kinds = new Set(items.map(item => item?.kind));
-  const valid = items.length >= 1 && items.length <= 2 && kinds.size === items.length && kinds.has("audio") &&
+  const valid = items.length >= 1 && items.length <= 2 && kinds.size === items.length &&
     items.every(item => (item.kind === "audio" || item.kind === "video") && Number.isFinite(item.size) && item.size > 0 && item.size <= limit &&
       new RegExp("\\." + (item.kind === "audio" ? "mp3" : "mp4") + "$", "i").test(String(item.name ?? "")));
   if (!validUploadName(folder, 120) || !validUploadName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) || !valid) return json("נתוני ההעלאה אינם תקינים", 400);
@@ -707,7 +709,6 @@ const uploadMultiScript = `(() => {
   const mb = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(1) + "GB" : (bytes / 1048576).toFixed(0) + "MB";
   let picked = [];
   let courses = [];
-  let orphans = [];
   let running = false;
 
   const note = (text, kind) => { status.textContent = text; status.className = "notice" + (kind ? " " + kind : ""); status.hidden = !text; };
@@ -726,15 +727,14 @@ const uploadMultiScript = `(() => {
       map.set(key, entry);
     }
     const old = new Map(courses.map(course => [course.key, course]));
-    courses = []; orphans = [];
+    courses = [];
     for (const entry of map.values()) {
-      if (!entry.mp3) { orphans.push(entry); continue; }
       const prev = old.get(entry.key);
-      const stem = stemOf(entry.mp3.name);
+      const stem = stemOf((entry.mp3 || entry.mp4).name);
       let problem = "";
       if (entry.dupe) problem = "קבצים כפולים באותו שם";
       else if (stem.length > 180 || /[/\\\\]/.test(stem)) problem = "שם הקובץ ארוך או לא תקין";
-      else if (entry.mp3.size > LIMIT || (entry.mp4 && entry.mp4.size > LIMIT)) problem = "הקובץ גדול מדי";
+      else if ((entry.mp3 && entry.mp3.size > LIMIT) || (entry.mp4 && entry.mp4.size > LIMIT)) problem = "הקובץ גדול מדי";
       courses.push({key: entry.key, stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem, state: prev && prev.state === "done" ? "done" : "pending", error: ""});
     }
     courses.sort((a, b) => a.title.localeCompare(b.title, "he"));
@@ -752,7 +752,8 @@ const uploadMultiScript = `(() => {
       const main = el("span", "lesson-main");
       main.append(el("span", "lesson-title", course.title), el("span", "lesson-meta", stateText(course)));
       const badges = el("span", "lesson-badges");
-      badges.append(el("span", "badge", "MP3"), el("span", course.mp4 ? "badge" : "badge warn", course.mp4 ? "MP4" : "ללא MP4"));
+      if (course.mp3) badges.append(el("span", "badge", "MP3"));
+      if (course.mp4) badges.append(el("span", "badge", "MP4"));
       row.append(main, badges);
       if (!running && course.state !== "done") {
         const remove = el("button", "button small", "הסרה"); remove.type = "button";
@@ -761,16 +762,11 @@ const uploadMultiScript = `(() => {
       }
       list.append(row);
     }
-    for (const entry of orphans) {
-      const row = el("li", "lesson-card");
-      const main = el("span", "lesson-main");
-      main.append(el("span", "lesson-title", nice(stemOf(entry.mp4.name))), el("span", "lesson-meta", "MP4 בלי MP3 מתאים: לא יועלה"));
-      row.append(main, el("span", "badge warn", "חסר MP3"));
-      list.append(row);
-    }
     const ready = courses.filter(course => !course.problem && course.state !== "done").length;
-    const withVideo = courses.filter(course => course.mp4).length;
-    summary.textContent = courses.length ? courses.length + " שיעורים · " + withVideo + " עם MP4" + (orphans.length ? " · " + orphans.length + " ללא MP3" : "") + (ignored.length ? " · " + ignored.length + " קבצים התעלמו" : "") : "";
+    const both = courses.filter(course => course.mp3 && course.mp4).length;
+    const only3 = courses.filter(course => course.mp3 && !course.mp4).length;
+    const only4 = courses.filter(course => !course.mp3 && course.mp4).length;
+    summary.textContent = courses.length ? courses.length + " שיעורים · " + both + " עם MP3 ו־MP4 · " + only3 + " MP3 בלבד · " + only4 + " MP4 בלבד" + (ignored.length ? " · " + ignored.length + " קבצים התעלמו" : "") : "";
     start.disabled = running || !ready;
     start.textContent = courses.some(course => course.state === "failed") ? "נסו שוב את הנכשלים" : ready ? "העלאת " + ready + " שיעורים" : "העלאה";
   }
@@ -808,12 +804,14 @@ const uploadMultiScript = `(() => {
     if (!todo.length) return;
     running = true; window.onbeforeunload = () => "ההעלאה בעיצומה";
     bar.hidden = false; bar.value = 0; note("");
-    const total = todo.reduce((sum, course) => sum + course.mp3.size + (course.mp4 ? course.mp4.size : 0), 0);
+    const total = todo.reduce((sum, course) => sum + (course.mp3 ? course.mp3.size : 0) + (course.mp4 ? course.mp4.size : 0), 0);
     let done = 0;
     for (const course of todo) {
       course.state = "busy"; course.error = ""; render([]);
-      const files = [{kind: "audio", file: course.mp3}];
-      if (course.mp4) files.unshift({kind: "video", file: course.mp4});
+      const files = [];
+      if (course.mp4) files.push({kind: "video", file: course.mp4});
+      if (course.mp3) files.push({kind: "audio", file: course.mp3});
+      const size = files.reduce((sum, item) => sum + item.file.size, 0);
       try {
         const prepared = await fetch("/admin/upload-url", {method: "POST", headers: {"Content-Type": "application/json"},
           body: JSON.stringify({folder, title: course.stem, upload_id: batch, files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})});
@@ -827,7 +825,7 @@ const uploadMultiScript = `(() => {
         }
         done += courseDone; course.state = "done";
       } catch (error) {
-        done += course.mp3.size + (course.mp4 ? course.mp4.size : 0);
+        done += size;
         course.state = "failed"; course.error = error.message === "network" ? "חיבור או CORS" : error.message;
       }
       render([]);
@@ -855,7 +853,7 @@ async function courseMultiForm(env, current, status = 200) {
   const options = known.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
   return layout("הוספת כמה שיעורים", `<div class="panel">
     ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה.", "info")}
-    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ.</p>
+    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ. קובץ בלי זוג (MP3 בלבד או MP4 בלבד) הופך לשיעור נפרד.</p>
     <form class="form-grid" data-multi-upload>
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
         <label>קטגוריה<select name="folder" required><option value="">בחירת קטגוריה</option>${options}</select></label>
@@ -886,15 +884,15 @@ async function addBackblazeCourse(request, env) {
   const video = form?.get("video");
   const validName = (value, max) => value && value !== "." && value !== ".." && value.length <= max && !/[/\\\x00-\x1f\x7f]/.test(value);
   if (!validName(folder, 120) || !validName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) ||
-      !audio?.size || !/\.mp3$/i.test(audio.name) || (video?.size && !/\.mp4$/i.test(video.name))) {
+      (!audio?.size && !video?.size) || (audio?.size && !/\.mp3$/i.test(audio.name)) || (video?.size && !/\.mp4$/i.test(video.name))) {
     return courseUploadForm(env, folder, "בדקו את הכותרת, הקטגוריה וסוגי הקבצים.", 400);
   }
-  if (audio.size + (video?.size || 0) > courseUploadLimit) return tooLarge();
+  if ((audio?.size || 0) + (video?.size || 0) > courseUploadLimit) return tooLarge();
   try {
     const storage = await backblaze(env, true);
     const key = `${folder}/${id}/${title}`;
     if (video?.size) await storage.upload(video, key + ".mp4", "video/mp4");
-    await storage.upload(audio, key + ".mp3", "audio/mpeg");
+    if (audio?.size) await storage.upload(audio, key + ".mp3", "audio/mpeg");
     return redirect("/admin?" + new URLSearchParams({folder, published: "1"}));
   } catch (error) {
     return courseUploadForm(env, folder, "ההעלאה לא הושלמה. קוד תקלה: " + writeStatus(error), 502);
@@ -949,17 +947,17 @@ async function deleteCourse(request, env) {
 }
 
 function adminCourseRow(folder, course, hidden) {
-  const {code, title, video} = course;
+  const {code, title, audio, video} = course;
   const ids = `<input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">`;
   const visibility = `<form method="post" action="/admin/course-visibility">${ids}
     <button class="button small ${hidden ? "gold" : ""}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "הסתרה מהספרייה"}</button></form>`;
   const remove = `<details class="row-menu danger-zone"><summary>מחיקה סופית</summary>
     <form method="post" action="/admin/course-delete" class="form-grid">${ids}
-      <p>הקבצים (MP3${video ? " ו־MP4" : ""}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
+      <p>הקבצים (${[audio && "MP3", video && "MP4"].filter(Boolean).join(" ו־")}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
       <label class="check"><input type="checkbox" name="confirm" value="yes" required> אני מאשר/ת למחוק את השיעור</label>
       <button class="button small danger">מחיקת השיעור</button></form></details>`;
   return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
-    <span class="lesson-badges">${badges(video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
+    <span class="lesson-badges">${badges(audio, video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
     <span class="row-actions">${visibility}</span>${remove}</li>`;
 }
 
@@ -981,7 +979,7 @@ async function backblazeAdmin(env, url) {
     return courseUploadForm(env, current, "", 200, check);
   }
   const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=multi">+ הוספת כמה שיעורים</a><a class="button" href="/admin?add=1">+ שיעור אחד</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
-  const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. שיעור בלי MP4 מסומן ״חסר MP4״.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
+  const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. אפשר גם להעלות MP3 בלבד או MP4 בלבד: כל קובץ בלי זוג הופך לשיעור נפרד.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
     (url.searchParams.has("saved") ? notice("הגדרות הגישה נשמרו.") : "") +
@@ -1000,25 +998,26 @@ async function backblazeAdmin(env, url) {
         <h2>הקטגוריות</h2>${cards ? `<ul class="folder-grid">${cards}</ul>` : '<div class="panel empty-state"><p>עדיין אין קטגוריות. הוסיפו קטגוריה חדשה למטה.</p></div>'}` + addCategoryPanel + howTo, 200, {admin: true});
     }
     const q = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
-    const onlyMissing = url.searchParams.get("missing") === "1";
+    const only = ["mp3", "mp4"].includes(url.searchParams.get("only")) ? url.searchParams.get("only") : "";
     const {courses, notes} = await planImport(current, storage);
     const {results: hiddenRows} = await env.DB.prepare("SELECT course_id FROM backblaze_hidden_courses WHERE folder = ?").bind(current).all();
     const hiddenIds = new Set(hiddenRows.map(row => row.course_id));
     const all = courses.filter(course => !hiddenIds.has(course.code));
     const hidden = courses.filter(course => hiddenIds.has(course.code));
-    const missing = all.filter(course => !course.video).length;
-    const shown = all.filter(course => (!onlyMissing || !course.video) && course.title.toLowerCase().includes(q.toLowerCase()));
+    const mp3Only = all.filter(course => course.audio && !course.video).length;
+    const mp4Only = all.filter(course => course.video && !course.audio).length;
+    const shown = all.filter(course => (only === "mp3" ? course.audio && !course.video : only === "mp4" ? course.video && !course.audio : true) && course.title.toLowerCase().includes(q.toLowerCase()));
     const perPage = 40;
     const pages = Math.max(1, Math.ceil(shown.length / perPage));
     const page = Math.max(1, Math.min(pages, Number.parseInt(url.searchParams.get("page"), 10) || 1));
-    const pageHref = n => esc(adminHref({folder: current, q, ...(onlyMissing ? {missing: 1} : {}), page: n}));
+    const pageHref = n => esc(adminHref({folder: current, q, ...(only ? {only} : {}), page: n}));
     const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
     const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
     const unset = rules.has(current) ? "" : notice("הקטגוריה הזו מוסתרת מהאתר. בחרו ״ציבורית״ או ״מוגנת בקוד״ ולחצו ״שמירה״ כדי שהשיעורים יופיעו.", "error");
     return layout(current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current}))) + accessPanel(current, rules.get(current)) + `
-      <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat${missing ? " warn" : ""}"><b>${missing}</b><span>חסר MP4</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
-      <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${onlyMissing ? '<input type="hidden" name="missing" value="1">' : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
-      <div class="filters">${chip("הכול", {q}, !onlyMissing)}${chip(`חסר MP4 (${missing})`, {q, missing: 1}, onlyMissing)}</div>
+      <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat"><b>${mp3Only}</b><span>MP3 בלבד</span></div><div class="stat"><b>${mp4Only}</b><span>MP4 בלבד</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
+      <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${only ? `<input type="hidden" name="only" value="${only}">` : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
+      <div class="filters">${chip("הכול", {q}, !only)}${chip(`MP3 בלבד (${mp3Only})`, {q, only: "mp3"}, only === "mp3")}${chip(`MP4 בלבד (${mp4Only})`, {q, only: "mp4"}, only === "mp4")}</div>
       ${shown.length ? `<ul class="lesson-list">${shown.slice((page - 1) * perPage, page * perPage).map(course => adminCourseRow(current, course, false)).join("")}</ul>${pager}` : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>'}
       ${hidden.length ? `<details class="help"><summary>שיעורים מוסתרים (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
       ${notes.length ? `<details class="help"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}` + howTo, 200, {admin: true, before: `<nav class="breadcrumbs" aria-label="מיקום"><a href="/admin">ניהול</a><span aria-hidden="true">‹</span><span>${esc(current)}</span></nav>`});
@@ -1051,14 +1050,14 @@ async function b2Catalogue(request, env, url) {
     }
     const link = (kind, extra = "") => esc(backblazeCourseLink(category, courseId, kind) + extra);
     const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a><span aria-hidden="true">‹</span><a href="${esc(backblazeCourseLink(category))}">${esc(category)}</a></nav>`;
-    return layout(course.title, `<div class="course-head">${badges(course.video)}</div>
+    return layout(course.title, `<div class="course-head">${badges(course.audio, course.video)}</div>
       <div class="player-grid">
-        <section class="player-card"><h2>צפייה בשיעור · MP4</h2>
-          ${course.video ? `<video controls playsinline preload="metadata" src="${link("video")}"></video>
-          <div class="player-actions"><a class="button" href="${link("video", "&download=1")}">הורדת MP4</a></div>` : '<p style="margin:0">אין עדיין קובץ וידאו לשיעור זה.</p>'}</section>
-        <section class="player-card"><h2>האזנה לשיעור · MP3</h2>
+        ${course.video ? `<section class="player-card"><h2>צפייה בשיעור · MP4</h2>
+          <video controls playsinline preload="metadata" src="${link("video")}"></video>
+          <div class="player-actions"><a class="button" href="${link("video", "&download=1")}">הורדת MP4</a></div></section>` : ""}
+        ${course.audio ? `<section class="player-card"><h2>האזנה לשיעור · MP3</h2>
           <audio controls preload="metadata" src="${link("audio")}"></audio>
-          <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>
+          <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>` : ""}
       </div>`, 200, {before: crumbs});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
@@ -1086,9 +1085,9 @@ async function b2Catalogue(request, env, url) {
   for (const folder of category ? [category] : folders) {
     if (!category && !await open(folder)) continue;
     const {courses} = await planImport(folder, storage);
-    for (const {code, title, video} of courses) {
+    for (const {code, title, audio, video} of courses) {
       if (!hidden.has(JSON.stringify([folder, code])) && title.toLowerCase().includes(query.toLowerCase())) {
-        rows.push(`<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-main"><span class="lesson-title">${esc(title)}</span><span class="lesson-meta">${esc(folder)}</span></span><span class="lesson-badges">${badges(video)}</span></a></li>`);
+        rows.push(`<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-main"><span class="lesson-title">${esc(title)}</span><span class="lesson-meta">${esc(folder)}</span></span><span class="lesson-badges">${badges(audio, video)}</span></a></li>`);
       }
     }
   }
