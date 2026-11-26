@@ -117,6 +117,19 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .player-card { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .player-card h2 { margin: 0 0 12px; font-size: 1.2rem; }
 .player-card video { width: 100%; display: block; aspect-ratio: 16/9; background: #000; border-radius: 10px; }
+.audio-bar { position: fixed; inset-inline: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: auto 1fr; grid-template-areas: "play title" "progress progress" "controls controls"; align-items: center; gap: 6px 14px; padding: 10px max(16px, calc((100% - 1040px) / 2)) calc(10px + env(safe-area-inset-bottom)); background: #0b1626f2; backdrop-filter: blur(10px); border-top: 1px solid var(--line); box-shadow: 0 -10px 30px #0008; }
+.audio-bar[hidden] { display: none; }
+.ab-play { grid-area: play; width: 52px; height: 52px; border-radius: 50%; border: 0; background: linear-gradient(145deg,var(--gold2),var(--gold)); color: #1c2430; font-size: 1.3rem; cursor: pointer; }
+.ab-title { grid-area: title; font-weight: 700; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
+.ab-controls { grid-area: controls; display: flex; gap: 8px; justify-content: space-between; }
+.ab-controls .ab-btn { flex: 1; }
+.ab-btn { min-width: 44px; min-height: 40px; padding: 4px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface2); color: var(--text); font-weight: 700; cursor: pointer; }
+.ab-btn:hover { border-color: var(--gold); }
+.ab-progress { grid-area: progress; display: flex; align-items: center; gap: 10px; }
+.ab-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; min-width: 3.2em; text-align: center; }
+.ab-slider { flex: 1; min-height: 0; height: 24px; padding: 0; background: none; border: 0; accent-color: var(--gold); }
+.has-audio-bar main { padding-block-end: 190px; }
+.resume { margin-block: 0 12px; }
 .video-wrap { position: relative; }
 .video-logo { position: absolute; top: 12px; right: 12px; width: clamp(44px, 14%, 120px); height: auto; opacity: .92; pointer-events: none; }
 .cover-art { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); margin-block-end: 14px; }
@@ -1164,13 +1177,80 @@ function id3Tag(title, image) {
 }
 
 const playerScript = `(() => {
-  if (!("mediaSession" in navigator) || !document.querySelector("[data-cover]")) return;
+  const audio = document.querySelector("audio");
+  if (!audio) return;
   const title = (document.querySelector("h1") || {}).textContent || "";
-  for (const media of document.querySelectorAll("audio,video")) {
-    media.addEventListener("play", () => {
-      navigator.mediaSession.metadata = new MediaMetadata({title, artwork: [{src: "/brand/cover.jpg", sizes: "600x600", type: "image/jpeg"}]});
-    });
+  const hasCover = Boolean(document.querySelector("[data-cover]"));
+  const store = { get(key) { try { return localStorage.getItem(key); } catch (error) { return null; } }, set(key, value) { try { localStorage.setItem(key, value); } catch (error) {} }, del(key) { try { localStorage.removeItem(key); } catch (error) {} } };
+  const posKey = "ot-pos:" + location.search;
+  const speedKey = "ot-speed";
+  const speeds = [1, 1.25, 1.5, 1.75, 2, 0.75];
+  const fmt = seconds => { if (!Number.isFinite(seconds) || seconds < 0) seconds = 0; const s = Math.floor(seconds); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); const r = String(s % 60).padStart(2, "0"); return h ? h + ":" + String(m).padStart(2, "0") + ":" + r : m + ":" + r; };
+  const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; };
+  const button = (label, text, cls) => { const node = el("button", cls || "ab-btn", text); node.type = "button"; node.setAttribute("aria-label", label); return node; };
+
+  const bar = el("div", "audio-bar");
+  bar.hidden = true;
+  bar.setAttribute("role", "region");
+  bar.setAttribute("aria-label", "נגן שמע");
+  const play = button("הפעלה או השהיה", "▶", "ab-play");
+  const name = el("div", "ab-title", title);
+  const back = button("15 שניות אחורה", "15−");
+  const fwd = button("15 שניות קדימה", "15+");
+  const speed = button("מהירות", "1×");
+  const close = button("סגירת הנגן", "✕", "ab-btn ab-close");
+  const now = el("span", "ab-time", "0:00");
+  const total = el("span", "ab-time", "0:00");
+  const slider = el("input", "ab-slider");
+  slider.type = "range"; slider.min = "0"; slider.max = "1000"; slider.value = "0"; slider.step = "1";
+  slider.setAttribute("aria-label", "התקדמות"); slider.dir = "ltr";
+  const progress = el("div", "ab-progress"); progress.dir = "ltr"; progress.append(now, slider, total);
+  const controls = el("div", "ab-controls"); controls.append(back, fwd, speed, close);
+  bar.append(play, name, progress, controls);
+  document.body.append(bar);
+
+  let rate = Number(store.get(speedKey)) || 1;
+  if (!speeds.includes(rate)) rate = 1;
+  let dragging = false;
+  let lastSaved = 0;
+  const applyRate = () => { audio.playbackRate = rate; speed.textContent = String(rate).replace(/^0\\\\./, "0.") + "×"; };
+  const show = () => { bar.hidden = false; document.body.classList.add("has-audio-bar"); };
+  const sync = () => {
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    if (!dragging) slider.value = duration ? String(Math.round(audio.currentTime / duration * 1000)) : "0";
+    now.textContent = fmt(audio.currentTime);
+    total.textContent = fmt(duration);
+    play.textContent = audio.paused ? "▶" : "⏸";
+    if (Date.now() - lastSaved > 4000 && audio.currentTime > 3 && !audio.paused) { lastSaved = Date.now(); store.set(posKey, String(Math.floor(audio.currentTime))); }
+  };
+  const seek = seconds => { const duration = Number.isFinite(audio.duration) ? audio.duration : Infinity; audio.currentTime = Math.max(0, Math.min(duration, audio.currentTime + seconds)); sync(); };
+
+  play.addEventListener("click", () => { if (audio.paused) audio.play(); else audio.pause(); });
+  back.addEventListener("click", () => seek(-15));
+  fwd.addEventListener("click", () => seek(15));
+  speed.addEventListener("click", () => { rate = speeds[(speeds.indexOf(rate) + 1) % speeds.length]; store.set(speedKey, String(rate)); applyRate(); });
+  close.addEventListener("click", () => { audio.pause(); bar.hidden = true; document.body.classList.remove("has-audio-bar"); });
+  slider.addEventListener("input", () => { dragging = true; const duration = Number.isFinite(audio.duration) ? audio.duration : 0; now.textContent = fmt(Number(slider.value) / 1000 * duration); });
+  slider.addEventListener("change", () => { const duration = Number.isFinite(audio.duration) ? audio.duration : 0; audio.currentTime = Number(slider.value) / 1000 * duration; dragging = false; sync(); });
+  for (const type of ["timeupdate", "durationchange", "pause", "ended", "loadedmetadata"]) audio.addEventListener(type, sync);
+  audio.addEventListener("play", () => { show(); applyRate(); sync(); if ("mediaSession" in navigator) { navigator.mediaSession.metadata = new MediaMetadata(Object.assign({title}, hasCover ? {artwork: [{src: "/brand/cover.jpg", sizes: "600x600", type: "image/jpeg"}]} : {})); } });
+  audio.addEventListener("ended", () => store.del(posKey));
+  audio.addEventListener("ratechange", () => { if (audio.playbackRate !== rate) applyRate(); });
+  if ("mediaSession" in navigator) {
+    const action = (name, handler) => { try { navigator.mediaSession.setActionHandler(name, handler); } catch (error) {} };
+    action("seekbackward", () => seek(-15)); action("seekforward", () => seek(15));
+    action("play", () => audio.play()); action("pause", () => audio.pause());
   }
+  applyRate();
+
+  // Resume where the listener stopped
+  const saved = Number(store.get(posKey));
+  if (saved > 10) {
+    const resume = button("המשך האזנה", "המשך האזנה מ־" + fmt(saved), "button gold small resume");
+    resume.addEventListener("click", () => { const go = () => { audio.currentTime = saved; audio.play(); resume.remove(); }; if (audio.readyState >= 1) go(); else { audio.addEventListener("loadedmetadata", go, {once: true}); audio.load(); } });
+    audio.parentNode.insertBefore(resume, audio);
+  }
+  sync();
 })();
 `;
 
@@ -1469,7 +1549,7 @@ async function b2Catalogue(request, env, url) {
           ${assets.has("cover") ? '<img class="cover-art" src="/brand/cover.jpg" alt="">' : ""}
           <audio controls preload="metadata" src="${link("audio")}"></audio>
           <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>` : ""}
-      </div>`, 200, assets.has("cover") ? {before: crumbs, script: "/player.js"} : {before: crumbs});
+      </div>`, 200, course.audio ? {before: crumbs, script: "/player.js"} : {before: crumbs});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const path = parsePath(url.searchParams.get("path"));
