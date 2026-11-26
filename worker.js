@@ -117,6 +117,12 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .player-card { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .player-card h2 { margin: 0 0 12px; font-size: 1.2rem; }
 .player-card video { width: 100%; display: block; aspect-ratio: 16/9; background: #000; border-radius: 10px; }
+.video-wrap { position: relative; }
+.video-logo { position: absolute; top: 12px; right: 12px; width: clamp(44px, 14%, 120px); height: auto; opacity: .92; pointer-events: none; }
+.cover-art { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); margin-block-end: 14px; }
+.brand-preview { max-width: 100%; border-radius: 12px; border: 1px solid var(--line); background: repeating-conic-gradient(#2a3a50 0 25%, #1c2a3c 0 50%) 0 0 / 20px 20px; }
+.brand-preview.cover { width: 160px; height: 160px; object-fit: cover; }
+.brand-preview.logo { max-height: 120px; }
 .player-card audio { width: 100%; display: block; }
 .player-actions { margin-block-start: 14px; }
 
@@ -224,6 +230,7 @@ async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_access (folder TEXT PRIMARY KEY, mode TEXT NOT NULL, code_hash TEXT)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS site_assets (name TEXT PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_attempts (k TEXT PRIMARY KEY, period INTEGER NOT NULL, tries INTEGER NOT NULL)")
   ]);
   schemaReady = true;
@@ -323,7 +330,7 @@ function layout(title, content, status = 200, opts = {}) {
   const script = opts.script ? `<script src="${opts.script}" defer></script>` : "";
   const heading = opts.heading === false ? "" : `<h1>${esc(title)}</h1>`;
   return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title === siteName ? title : title + " | " + siteName)}</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}${script}</body></html>`,
-  {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + (opts.script ? "; script-src 'self'; connect-src 'self' https://*.backblaze.com https://*.backblazeb2.com" : "")}});
+  {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src 'self' data: blob:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + (opts.script ? "; script-src 'self'; connect-src 'self' https://*.backblaze.com https://*.backblazeb2.com" : "")}});
 }
 
 const notice = (text, type = "ok") => `<p class="notice ${type}" role="${type === "error" ? "alert" : "status"}">${esc(text)}</p>`;
@@ -435,6 +442,7 @@ async function admin(request, env, url) {
   }
   if (route === "/admin/course-visibility" && request.method === "POST") return setCourseVisibility(request, env);
   if (route === "/admin/backblaze-upload" && request.method === "POST") return addBackblazeCourse(request, env);
+  if (route === "/admin/branding" && request.method === "POST") return saveBranding(request, env);
   if (route === "/admin/upload-url" && request.method === "POST") return prepareUpload(request, env);
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
@@ -522,6 +530,42 @@ async function backblaze(env, writing = false) {
         cursor: nextFileName,
         truncated: Boolean(nextFileName)
       };
+    },
+    async audioWithCover(fileId, downloadName, title, image) {
+      const response = await fetch(storageApi.downloadUrl + "/b2api/v4/b2_download_file_by_id?" + new URLSearchParams({fileId}), {headers: {Authorization: authorizationToken}, redirect: "manual"});
+      if (response.status !== 200 || !response.body) throw new Error("media-" + response.status);
+      const total = Number(response.headers.get("Content-Length"));
+      const reader = response.body.getReader();
+      let first = new Uint8Array(0);
+      while (first.length < 10) { const {done, value} = await reader.read(); if (done) break; first = joinBytes(first, value); }
+      let skip = 0;
+      if (first.length >= 10 && first[0] === 0x49 && first[1] === 0x44 && first[2] === 0x33) {
+        skip = 10 + (((first[6] & 127) << 21) | ((first[7] & 127) << 14) | ((first[8] & 127) << 7) | (first[9] & 127)) + ((first[5] & 0x10) ? 10 : 0);
+      }
+      const oldSize = skip;
+      const tag = id3Tag(title, image);
+      let pending = first;
+      let started = false;
+      const stream = new ReadableStream({
+        async pull(controller) {
+          if (!started) { started = true; controller.enqueue(tag); return; }
+          while (true) {
+            let chunk;
+            if (pending) { chunk = pending; pending = null; }
+            else { const {done, value} = await reader.read(); if (done) { controller.close(); return; } chunk = value; }
+            if (skip > 0) { if (chunk.length <= skip) { skip -= chunk.length; continue; } chunk = chunk.subarray(skip); skip = 0; }
+            if (chunk.length) { controller.enqueue(chunk); return; }
+          }
+        },
+        cancel() { reader.cancel().catch(() => {}); }
+      });
+      const headers = new Headers({...security, "Content-Type": "audio/mpeg", "Cache-Control": "private, no-store", "Content-Disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(downloadName)});
+      if (Number.isFinite(total) && total > 0 && oldSize <= total && typeof FixedLengthStream !== "undefined") {
+        const fixed = new FixedLengthStream(tag.length + total - oldSize);
+        stream.pipeTo(fixed.writable).catch(() => {});
+        return new Response(fixed.readable, {status: 200, headers});
+      }
+      return new Response(stream, {status: 200, headers});
     },
     async media(request, fileId, type, downloadName = "") {
       const headers = new Headers({Authorization: authorizationToken});
@@ -882,6 +926,127 @@ async function courseMultiForm(env, current, status = 200) {
   </div>`, status, {admin: true, script: "/upload-multi.js"});
 }
 
+const bytesFromBase64 = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
+const joinBytes = (...parts) => { const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0)); let at = 0; for (const part of parts) { out.set(part, at); at += part.length; } return out; };
+
+// ID3v2.3 tag with the title (UTF-16) and the cover picture (front cover).
+function id3Tag(title, image) {
+  const text = new TextEncoder();
+  const utf16 = value => { const out = new Uint8Array(2 + value.length * 2); out[0] = 0xff; out[1] = 0xfe; for (let i = 0; i < value.length; i++) { const code = value.charCodeAt(i); out[2 + i * 2] = code & 255; out[3 + i * 2] = code >> 8; } return out; };
+  const frame = (id, body) => { const head = new Uint8Array(10); head.set(text.encode(id), 0); new DataView(head.buffer).setUint32(4, body.length); return joinBytes(head, body); };
+  const frames = [];
+  if (title) frames.push(frame("TIT2", joinBytes(Uint8Array.of(1), utf16(title.slice(0, 200)), Uint8Array.of(0, 0))));
+  frames.push(frame("APIC", joinBytes(Uint8Array.of(0), text.encode("image/jpeg"), Uint8Array.of(0, 3, 0), image)));
+  const body = joinBytes(...frames);
+  const size = body.length;
+  return joinBytes(Uint8Array.of(0x49, 0x44, 0x33, 3, 0, 0, (size >> 21) & 127, (size >> 14) & 127, (size >> 7) & 127, size & 127), body);
+}
+
+const playerScript = `(() => {
+  if (!("mediaSession" in navigator) || !document.querySelector("[data-cover]")) return;
+  const title = (document.querySelector("h1") || {}).textContent || "";
+  for (const media of document.querySelectorAll("audio,video")) {
+    media.addEventListener("play", () => {
+      navigator.mediaSession.metadata = new MediaMetadata({title, artwork: [{src: "/brand/cover.jpg", sizes: "600x600", type: "image/jpeg"}]});
+    });
+  }
+})();
+`;
+
+const brandingScript = `(() => {
+  const note = (form, text, bad) => { const box = form.querySelector("[data-status]"); box.textContent = text; box.className = "notice" + (bad ? " error" : ""); box.hidden = !text; };
+  const toBlobUrl = (canvas, type, quality) => canvas.toDataURL(type, quality);
+  const render = (image, name) => {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (name === "cover") {
+      const side = Math.min(image.width, image.height);
+      canvas.width = canvas.height = 600;
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, 600, 600);
+      ctx.drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, 0, 0, 600, 600);
+      return toBlobUrl(canvas, "image/jpeg", 0.88);
+    }
+    for (const width of [400, 300, 200, 150]) {
+      canvas.width = Math.min(width, image.width);
+      canvas.height = Math.round(image.height * (canvas.width / image.width));
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const url = toBlobUrl(canvas, "image/png");
+      if (url.length < 800000) return url;
+    }
+    throw new Error("big");
+  };
+  const open = async file => {
+    if (window.createImageBitmap) return createImageBitmap(file);
+    return new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = URL.createObjectURL(file); });
+  };
+  document.querySelectorAll("form[data-brand]").forEach(form => {
+    const name = form.dataset.brand;
+    const input = form.querySelector("input[type=file]");
+    const send = async payload => {
+      const response = await fetch("/admin/branding", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+      if (!response.ok) throw new Error("save");
+    };
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const file = input.files[0];
+      if (!file) return note(form, "יש לבחור קובץ תמונה.", true);
+      try {
+        note(form, "שומרים…");
+        await send({name, dataUrl: render(await open(file), name)});
+        location.href = "/admin?branding=1&saved=1";
+      } catch (error) {
+        note(form, error.message === "big" ? "התמונה גדולה מדי. נסו קובץ קטן יותר." : "לא ניתן לשמור את התמונה. ודאו שהקובץ הוא תמונה (JPG או PNG).", true);
+      }
+    });
+    const remove = form.querySelector("[data-remove]");
+    if (remove) remove.addEventListener("click", async () => {
+      try { await send({name, remove: true}); location.href = "/admin?branding=1&saved=1"; } catch { note(form, "ההסרה נכשלה.", true); }
+    });
+  });
+})();
+`;
+
+async function saveBranding(request, env) {
+  if (Number(request.headers.get("Content-Length")) > 1500000) return json("הקובץ גדול מדי", 413);
+  const body = await request.json().catch(() => null);
+  const name = body?.name;
+  if (name !== "cover" && name !== "logo") return json("בקשה לא חוקית", 400);
+  if (body.remove === true) {
+    await env.DB.prepare("DELETE FROM site_assets WHERE name = ?").bind(name).run();
+    return Response.json({ok: true}, {headers: security});
+  }
+  const match = /^data:(image\/(?:jpeg|png));base64,([A-Za-z0-9+/=]+)$/.exec(String(body?.dataUrl ?? ""));
+  const mime = name === "cover" ? "image/jpeg" : "image/png";
+  if (!match || match[1] !== mime || match[2].length > 1000000) return json("קובץ תמונה לא תקין", 400);
+  let bytes;
+  try { bytes = bytesFromBase64(match[2]); } catch { return json("קובץ תמונה לא תקין", 400); }
+  const ok = name === "cover" ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff : bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+  if (!ok) return json("קובץ תמונה לא תקין", 400);
+  await env.DB.prepare("INSERT INTO site_assets (name, mime, data) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET mime=excluded.mime, data=excluded.data").bind(name, mime, match[2]).run();
+  return Response.json({ok: true}, {headers: security});
+}
+
+async function brandAsset(env, name) {
+  const row = await env.DB.prepare("SELECT mime, data FROM site_assets WHERE name = ?").bind(name).first();
+  if (!row) return new Response(null, {status: 404, headers: security});
+  return new Response(bytesFromBase64(row.data), {headers: {...security, "Content-Type": row.mime, "Cache-Control": "public, max-age=300"}});
+}
+
+async function brandingPage(env, url) {
+  const {results} = await env.DB.prepare("SELECT name FROM site_assets").all();
+  const has = new Set(results.map(row => row.name));
+  const stamp = Date.now();
+  const block = (name, title, help, accept, previewClass) => `<section class="panel stack" style="margin-block-end:18px"><h2 style="margin-block-start:0">${title}</h2><p>${help}</p>
+    ${has.has(name) ? `<p><img class="brand-preview ${previewClass}" src="/brand/${name === "cover" ? "cover.jpg" : "logo.png"}?v=${stamp}" alt=""></p>` : '<p class="badge muted" style="display:inline-block">עדיין לא הועלה</p>'}
+    <form class="form-grid" data-brand="${name}"><label>בחירת קובץ<input type="file" accept="${accept}"></label><p data-status role="status" hidden></p>
+      <div class="toolbar" style="margin:0"><button class="button gold">שמירה</button>${has.has(name) ? '<button type="button" class="button danger" data-remove>הסרה</button>' : ""}</div></form></section>`;
+  return layout("מיתוג האתר", (url.searchParams.has("saved") ? notice("השינוי נשמר.") : "") +
+    block("cover", "תמונת הרב", "התמונה נוספת אוטומטית לכל קובץ MP3 שמורידים מהאתר, ומוצגת מעל הנגן. מומלץ תמונה מרובעת או כזו שאפשר לחתוך למרובע.", "image/*", "cover") +
+    block("logo", "לוגו", "הלוגו מוצג בפינה הימנית העליונה של כל סרטון באתר. מומלץ קובץ PNG עם רקע שקוף.", "image/png", "logo") +
+    '<p><a class="button" href="/admin">חזרה לניהול</a></p>', 200, {admin: true, script: "/branding.js"});
+}
+
 async function addBackblazeCourse(request, env) {
   if (!uploadReady(env)) return courseUploadForm(env, "", "", 503);
   const tooLarge = () => courseUploadForm(env, "", "הקבצים גדולים מדי להעלאה מהאתר.", 413);
@@ -976,6 +1141,7 @@ const adminHref = params => "/admin?" + new URLSearchParams(params);
 
 async function backblazeAdmin(env, url) {
   const current = url.searchParams.get("folder") ?? "";
+  if (url.searchParams.has("branding")) return brandingPage(env, url);
   if (url.searchParams.get("add") === "multi") return courseMultiForm(env, current);
   if (url.searchParams.has("add")) {
     let check = "";
@@ -989,7 +1155,7 @@ async function backblazeAdmin(env, url) {
     }
     return courseUploadForm(env, current, "", 200, check);
   }
-  const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=multi">+ הוספת כמה שיעורים</a><a class="button" href="/admin?add=1">+ שיעור אחד</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
+  const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=multi">+ הוספת כמה שיעורים</a><a class="button" href="/admin?add=1">+ שיעור אחד</a><a class="button" href="/admin?branding=1">מיתוג</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
   const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. אפשר גם להעלות MP3 בלבד או MP4 בלבד: כל קובץ בלי זוג הופך לשיעור נפרד.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
@@ -1057,19 +1223,25 @@ async function b2Catalogue(request, env, url) {
       const file = medium === "video" ? course.video : medium === "audio" ? course.audio : null;
       const ext = medium === "video" ? ".mp4" : ".mp3";
       const name = url.searchParams.has("download") ? course.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, " ").trim().slice(0, 150) + ext : "";
+      if (file && medium === "audio" && name && request.method === "GET" && !request.headers.has("Range")) {
+        const cover = await env.DB.prepare("SELECT data FROM site_assets WHERE name = 'cover'").first();
+        if (cover) return storage.audioWithCover(file.etag, name, course.title, bytesFromBase64(cover.data));
+      }
       return file ? storage.media(request, file.etag, medium === "video" ? "video/mp4" : "audio/mpeg", name) : json("הקובץ לא נמצא", 404);
     }
+    const assets = new Set((await env.DB.prepare("SELECT name FROM site_assets").all()).results.map(row => row.name));
     const link = (kind, extra = "") => esc(backblazeCourseLink(category, courseId, kind) + extra);
     const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a><span aria-hidden="true">‹</span><a href="${esc(backblazeCourseLink(category))}">${esc(category)}</a></nav>`;
-    return layout(course.title, `<div class="course-head">${badges(course.audio, course.video)}</div>
+    return layout(course.title, `<div class="course-head"${assets.has("cover") ? " data-cover" : ""}>${badges(course.audio, course.video)}</div>
       <div class="player-grid">
         ${course.video ? `<section class="player-card"><h2>צפייה בשיעור · MP4</h2>
-          <video controls playsinline preload="metadata" src="${link("video")}"></video>
+          <div class="video-wrap"><video controls playsinline preload="metadata" src="${link("video")}"></video>${assets.has("logo") ? '<img class="video-logo" src="/brand/logo.png" alt="" aria-hidden="true">' : ""}</div>
           <div class="player-actions"><a class="button" href="${link("video", "&download=1")}">הורדת MP4</a></div></section>` : ""}
         ${course.audio ? `<section class="player-card"><h2>האזנה לשיעור · MP3</h2>
+          ${assets.has("cover") ? '<img class="cover-art" src="/brand/cover.jpg" alt="">' : ""}
           <audio controls preload="metadata" src="${link("audio")}"></audio>
           <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>` : ""}
-      </div>`, 200, {before: crumbs});
+      </div>`, 200, assets.has("cover") ? {before: crumbs, script: "/player.js"} : {before: crumbs});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const folders = (await backblazeFolders(storage)).filter(folder => rules.has(folder));
@@ -1127,7 +1299,10 @@ export default {
     if (path === "/style.css") return new Response(siteStyles, {headers:{"Content-Type":"text/css; charset=utf-8", "Cache-Control":"no-cache"}});
     if (path === "/upload-multi.js") return new Response(uploadMultiScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/upload.js") return new Response(uploadScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
+    if (path === "/branding.js") return new Response(brandingScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
+    if (path === "/player.js") return new Response(playerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     await ensureSchema(env);
+    if (path === "/brand/logo.png" || path === "/brand/cover.jpg") return brandAsset(env, path === "/brand/logo.png" ? "logo" : "cover");
     if (path === "/admin" || path.startsWith("/admin/")) {
       const response = await admin(request, env, url);
       response.headers.set("X-Robots-Tag", "noindex, nofollow");
