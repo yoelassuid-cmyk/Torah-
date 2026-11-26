@@ -86,13 +86,17 @@ input[type=file] { padding: 10px; }
 .page-main { padding-block: 28px 56px; }
 
 /* category cards */
-.folder-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,230px),1fr)); gap: 14px; }
-.folder-card { display: flex; align-items: center; gap: 14px; min-height: 84px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); text-decoration: none; font-weight: 700; overflow-wrap: anywhere; transition: transform .12s, border-color .12s, background .12s; }
+.folder-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 14px; }
+.folder-grid > li { display: flex; min-width: 0; }
+@media (max-width: 900px) { .folder-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .folder-grid { grid-template-columns: minmax(0, 1fr); } }
+.folder-card { display: flex; flex: 1; align-items: center; gap: 14px; min-height: 92px; min-width: 0; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); text-decoration: none; font-weight: 700; overflow-wrap: anywhere; transition: transform .12s, border-color .12s, background .12s; }
 .folder-card:hover { transform: translateY(-2px); border-color: var(--gold); background: var(--surface2); }
-.folder-card .folder-name { flex: 1; }
+.folder-card .folder-name { flex: 1; min-width: 0; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.folder-card .badge { flex: none; min-width: 2.2em; text-align: center; }
 .folder-icon { width: 44px; height: 44px; border-radius: 12px; background: #11233a; display: grid; place-items: center; color: var(--gold); flex: none; }
 .folder-icon svg { width: 24px; height: 24px; }
-.folder-arrow { color: var(--gold); font-size: 1.5rem; }
+.folder-arrow { color: var(--gold); font-size: 1.5rem; flex: none; }
 
 /* lessons */
 .lesson-list { display: grid; gap: 10px; }
