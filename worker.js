@@ -47,6 +47,8 @@ ul { list-style: none; margin: 0; padding: 0; }
 .nav-links { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .nav-link { color: var(--text); text-decoration: none; padding: 8px 12px; border-radius: 10px; background: none; border: 0; cursor: pointer; font-size: .95rem; }
 .nav-link:hover { background: var(--surface); }
+.nav-home { border: 1px solid var(--gold); color: var(--gold2); font-weight: 700; }
+.back-row { margin: 0 0 14px; }
 .nav-links form { margin: 0; display: block; }
 
 /* buttons */
@@ -347,11 +349,13 @@ const addCategoryPanel = '<details class="help"><summary>+ הוספת קטגור
 function layout(title, content, status = 200, opts = {}) {
   const logout = '<form method="post" action="/admin/logout"><button class="nav-link">יציאה</button></form>';
   const nav = opts.admin
-    ? `<a class="nav-link" href="/admin">ניהול</a><a class="nav-link" href="/admin?add=1">הוספת שיעור</a><a class="nav-link" href="/">לאתר</a>${logout}`
+    ? `<a class="nav-link nav-home" href="/admin">ניהול</a><a class="nav-link" href="/admin?add=multi">הוספת שיעורים</a><a class="nav-link" href="/">לאתר</a>${logout}`
     : opts.bare ? "" : '<a class="nav-link" href="/">הספרייה</a>';
   const script = opts.script ? [].concat(opts.script).map(src => `<script src="${src}" defer></script>`).join("") : "";
   const heading = opts.heading === false ? "" : `<h1>${esc(title)}</h1>`;
-  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title === siteName ? title : title + " | " + siteName)}</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}${script}</body></html>`,
+  const backLink = opts.admin && opts.before === undefined && title !== "ניהול הספרייה"
+    ? '<p class="back-row"><a class="button small" href="/admin">← חזרה לניהול</a></p>' : "";
+  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title === siteName ? title : title + " | " + siteName)}</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? backLink}${heading}${content}</main>${siteFooter}${script}</body></html>`,
   {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src 'self' data: blob:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + (opts.script ? "; script-src 'self'; connect-src 'self' https://*.backblaze.com https://*.backblazeb2.com" : "")}});
 }
 
