@@ -388,6 +388,15 @@ function titleMatch(a, b) {
   return short.every((token, index) => token === long[index]);
 }
 
+const sameTitle = (a, b) => titleTokens(a).join(" ") === titleTokens(b).join(" ");
+// Single candidate among those matching; when several match, the one with an identical title wins if it is the only one.
+function uniqueCandidate(items, test, exact) {
+  const hits = items.filter(test);
+  if (hits.length <= 1) return hits[0];
+  const exactHits = hits.filter(exact);
+  return exactHits.length === 1 ? exactHits[0] : undefined;
+}
+
 // Canonical folder trail of every course: similar sibling folders are merged under the most common spelling.
 function canonicalTrails(courses) {
   const raws = courses.map(course => course.folder.split("/").slice(1).filter(part => !isBatchId(part)));
@@ -486,19 +495,26 @@ async function planImport(folder, storage) {
     buckets.set(key, [...(buckets.get(key) ?? []), course]);
   }
   const merged = new Set();
+  const compatible = (a, v) => !(a.audio.number && v.video.number && a.audio.number !== v.video.number) && titleMatch(a.title, v.title);
   for (const list of buckets.values()) {
     const audios = list.filter(course => course.audio);
     const videos = list.filter(course => course.video);
     if (!audios.length || !videos.length) continue;
-    const compatible = (a, v) => !(a.audio.number && v.video.number && a.audio.number !== v.video.number) && titleMatch(a.title, v.title);
     for (const a of audios) {
-      const options = videos.filter(v => !merged.has(v) && compatible(a, v));
-      if (options.length !== 1) continue;
-      const [v] = options;
-      if (audios.filter(other => compatible(other, v)).length !== 1) continue;
+      const v = uniqueCandidate(videos.filter(item => !merged.has(item)), item => compatible(a, item), item => sameTitle(a.title, item.title));
+      if (!v || uniqueCandidate(audios.filter(item => !item.video), item => compatible(item, v), item => sameTitle(item.title, v.title)) !== a) continue;
       a.video = v.video;
       merged.add(v);
     }
+  }
+  // Second pass: leftovers anywhere in the category (e.g. loose videos at the root, MP3s in sub-folders): unique mutual title match only.
+  const looseAudio = courses.filter(course => course.audio && !course.video);
+  const looseVideo = courses.filter(course => course.video && !course.audio && !merged.has(course));
+  for (const a of looseAudio) {
+    const v = uniqueCandidate(looseVideo.filter(item => !merged.has(item)), item => compatible(a, item), item => sameTitle(a.title, item.title));
+    if (!v || uniqueCandidate(looseAudio.filter(item => !item.video), item => compatible(item, v), item => sameTitle(item.title, v.title)) !== a) continue;
+    a.video = v.video;
+    merged.add(v);
   }
   courses.splice(0, courses.length, ...courses.filter(course => !merged.has(course)));
   const counts = new Map();
