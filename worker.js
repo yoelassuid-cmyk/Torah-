@@ -599,6 +599,24 @@ async function backblazeFolders(storage) {
 
 const folderIcon = '<span class="folder-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>';
 
+const isBatchId = part => /^[a-f0-9-]{36}$/.test(part);
+const courseTrail = course => course.folder.split("/").slice(1).filter(part => !isBatchId(part));
+const parsePath = value => String(value ?? "").split("/").filter(part => part && part !== "." && part !== "..").slice(0, 12);
+const samePrefix = (trail, path) => path.every((part, index) => trail[index] === part);
+const navLink = (folder, path = []) => "/?" + new URLSearchParams(path.length ? {folder, path: path.join("/")} : {folder});
+
+function levelView(courses, path) {
+  const inside = [];
+  const subs = new Map();
+  for (const course of courses) {
+    const trail = courseTrail(course);
+    if (!samePrefix(trail, path)) continue;
+    if (trail.length === path.length) inside.push(course);
+    else subs.set(trail[path.length], (subs.get(trail[path.length]) ?? 0) + 1);
+  }
+  return {inside, subs: [...subs].sort((a, b) => a[0].localeCompare(b[0], "he"))};
+}
+
 function backblazeCourseLink(folder, course, file) {
   const params = new URLSearchParams({folder});
   if (course) params.set("course", course);
@@ -1122,7 +1140,7 @@ async function deleteCourse(request, env) {
   }
 }
 
-function adminCourseRow(folder, course, hidden) {
+function adminCourseRow(folder, course, hidden, where = "") {
   const {code, title, audio, video} = course;
   const ids = `<input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">`;
   const visibility = `<form method="post" action="/admin/course-visibility">${ids}
@@ -1133,11 +1151,11 @@ function adminCourseRow(folder, course, hidden) {
       <label class="check"><input type="checkbox" name="confirm" value="yes" required> אני מאשר/ת למחוק את השיעור</label>
       <button class="button small danger">מחיקת השיעור</button></form></details>`;
   return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
-    <span class="lesson-badges">${badges(audio, video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
+    ${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}<span class="lesson-badges">${badges(audio, video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
     <span class="row-actions">${visibility}</span>${remove}</li>`;
 }
 
-const adminHref = params => "/admin?" + new URLSearchParams(params);
+const adminHref = params => "/admin?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, value]) => value !== "" && value !== undefined && value !== null)));
 
 async function backblazeAdmin(env, url) {
   const current = url.searchParams.get("folder") ?? "";
@@ -1179,25 +1197,31 @@ async function backblazeAdmin(env, url) {
     const {courses, notes} = await planImport(current, storage);
     const {results: hiddenRows} = await env.DB.prepare("SELECT course_id FROM backblaze_hidden_courses WHERE folder = ?").bind(current).all();
     const hiddenIds = new Set(hiddenRows.map(row => row.course_id));
-    const all = courses.filter(course => !hiddenIds.has(course.code));
-    const hidden = courses.filter(course => hiddenIds.has(course.code));
+    const path = parsePath(url.searchParams.get("path"));
+    const inScope = course => samePrefix(courseTrail(course), path);
+    const all = courses.filter(course => !hiddenIds.has(course.code) && inScope(course));
+    const hidden = courses.filter(course => hiddenIds.has(course.code) && inScope(course));
+    const browsing = !q && !only;
+    const level = levelView(all, path);
+    if (path.length && !level.inside.length && !level.subs.length) return layout("התיקייה לא נמצאה", `<a class="button" href="${esc(adminHref({folder: current}))}">חזרה לקטגוריה</a>`, 404, {admin: true});
     const mp3Only = all.filter(course => course.audio && !course.video).length;
     const mp4Only = all.filter(course => course.video && !course.audio).length;
-    const shown = all.filter(course => (only === "mp3" ? course.audio && !course.video : only === "mp4" ? course.video && !course.audio : true) && course.title.toLowerCase().includes(q.toLowerCase()));
+    const shown = (browsing ? level.inside : all).filter(course => (only === "mp3" ? course.audio && !course.video : only === "mp4" ? course.video && !course.audio : true) && course.title.toLowerCase().includes(q.toLowerCase()));
     const perPage = 40;
     const pages = Math.max(1, Math.ceil(shown.length / perPage));
     const page = Math.max(1, Math.min(pages, Number.parseInt(url.searchParams.get("page"), 10) || 1));
-    const pageHref = n => esc(adminHref({folder: current, q, ...(only ? {only} : {}), page: n}));
+    const pageHref = n => esc(adminHref({folder: current, path: path.join("/"), q, only, page: n}));
     const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
-    const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
+    const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, path: path.join("/"), ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
     const unset = rules.has(current) ? "" : notice("הקטגוריה הזו מוסתרת מהאתר. בחרו ״ציבורית״ או ״מוגנת בקוד״ ולחצו ״שמירה״ כדי שהשיעורים יופיעו.", "error");
-    return layout(current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current}))) + accessPanel(current, rules.get(current)) + `
+    return layout(path.length ? path[path.length - 1] : current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current}))) + (path.length ? "" : accessPanel(current, rules.get(current))) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat"><b>${mp3Only}</b><span>MP3 בלבד</span></div><div class="stat"><b>${mp4Only}</b><span>MP4 בלבד</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
-      <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${only ? `<input type="hidden" name="only" value="${only}">` : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
+      <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${path.length ? `<input type="hidden" name="path" value="${esc(path.join("/"))}">` : ""}${only ? `<input type="hidden" name="only" value="${only}">` : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !only)}${chip(`MP3 בלבד (${mp3Only})`, {q, only: "mp3"}, only === "mp3")}${chip(`MP4 בלבד (${mp4Only})`, {q, only: "mp4"}, only === "mp4")}</div>
-      ${shown.length ? `<ul class="lesson-list">${shown.slice((page - 1) * perPage, page * perPage).map(course => adminCourseRow(current, course, false)).join("")}</ul>${pager}` : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>'}
+      ${browsing && level.subs.length ? `<h2 style="margin-block-start:8px">תיקיות</h2><ul class="folder-grid" style="margin-block-end:22px">${level.subs.map(([name, count]) => `<li><a class="folder-card" href="${esc(adminHref({folder: current, path: [...path, name].join("/")}))}">${folderIcon}<span class="folder-name">${esc(name)}</span><span class="badge muted">${count}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`).join("")}</ul>` : ""}
+      ${shown.length ? `<ul class="lesson-list">${shown.slice((page - 1) * perPage, page * perPage).map(course => adminCourseRow(current, course, false, browsing ? "" : courseTrail(course).join(" › "))).join("")}</ul>${pager}` : (browsing && level.subs.length ? "" : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>')}
       ${hidden.length ? `<details class="help"><summary>שיעורים מוסתרים (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
-      ${notes.length ? `<details class="help"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}` + howTo, 200, {admin: true, before: `<nav class="breadcrumbs" aria-label="מיקום"><a href="/admin">ניהול</a><span aria-hidden="true">‹</span><span>${esc(current)}</span></nav>`});
+      ${notes.length ? `<details class="help"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}` + howTo, 200, {admin: true, before: `<nav class="breadcrumbs" aria-label="מיקום">${['<a href="/admin">ניהול</a>', path.length ? `<a href="${esc(adminHref({folder: current}))}">${esc(current)}</a>` : `<span>${esc(current)}</span>`, ...path.map((part, index) => index === path.length - 1 ? `<span>${esc(part)}</span>` : `<a href="${esc(adminHref({folder: current, path: path.slice(0, index + 1).join("/")}))}">${esc(part)}</a>`)].join('<span aria-hidden="true">‹</span>')}</nav>`});
   } catch {
     return layout("ניהול הספרייה", actions + notice("לא ניתן לטעון את Backblaze כרגע. נסו שוב בעוד רגע.", "error") + '<p><a class="button" href="/admin">ניסיון נוסף</a></p>' + howTo, 502, {admin: true});
   }
@@ -1231,7 +1255,8 @@ async function b2Catalogue(request, env, url) {
     }
     const assets = new Set((await env.DB.prepare("SELECT name FROM site_assets").all()).results.map(row => row.name));
     const link = (kind, extra = "") => esc(backblazeCourseLink(category, courseId, kind) + extra);
-    const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a><span aria-hidden="true">‹</span><a href="${esc(backblazeCourseLink(category))}">${esc(category)}</a></nav>`;
+    const trail = courseTrail(course);
+    const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה">${["<a href=\"/\">הספרייה</a>", `<a href="${esc(navLink(category))}">${esc(category)}</a>`, ...trail.map((part, index) => `<a href="${esc(navLink(category, trail.slice(0, index + 1)))}">${esc(part)}</a>`)].join('<span aria-hidden="true">‹</span>')}</nav>`;
     return layout(course.title, `<div class="course-head"${assets.has("cover") ? " data-cover" : ""}>${badges(course.audio, course.video)}</div>
       <div class="player-grid">
         ${course.video ? `<section class="player-card"><h2>צפייה בשיעור · MP4</h2>
@@ -1244,10 +1269,11 @@ async function b2Catalogue(request, env, url) {
       </div>`, 200, assets.has("cover") ? {before: crumbs, script: "/player.js"} : {before: crumbs});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
+  const path = parsePath(url.searchParams.get("path"));
   const folders = (await backblazeFolders(storage)).filter(folder => rules.has(folder));
   const searchForm = (withSelect) => `<form method="get" role="search" class="searchbar${withSelect ? " with-select" : ""}"><label>חיפוש שיעור<input type="search" name="q" maxlength="120" placeholder="שם השיעור" value="${esc(query)}"></label>${withSelect
     ? `<label>קטגוריה<select name="folder"><option value="">כל הקטגוריות</option>${folders.map(folder => `<option value="${esc(folder)}"${folder === category ? " selected" : ""}>${esc(folder)}</option>`).join("")}</select></label>`
-    : ""}<button class="button gold">חיפוש</button></form>`;
+    : ""}${category && path.length ? `<input type="hidden" name="path" value="${esc(path.join("/"))}">` : ""}<button class="button gold">חיפוש</button></form>`;
   if (!category && !query) {
     let cards = "";
     for (const folder of folders) {
@@ -1264,30 +1290,44 @@ async function b2Catalogue(request, env, url) {
     : env.DB.prepare("SELECT folder, course_id FROM backblaze_hidden_courses");
   const {results: hiddenRows} = await hiddenQuery.all();
   const hidden = new Set(hiddenRows.map(row => JSON.stringify([row.folder, row.course_id])));
-  const rows = [];
+  const lessonRow = (folder, course, where) => `<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, course.code))}"><span class="lesson-main"><span class="lesson-title">${esc(course.title)}</span>${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}</span><span class="lesson-badges">${badges(course.audio, course.video)}</span></a></li>`;
+  const browsing = Boolean(category) && !query;
+  let rows = [];
+  let subCards = "";
   for (const folder of category ? [category] : folders) {
     if (!category && !await open(folder)) continue;
-    const {courses} = await planImport(folder, storage);
-    for (const {code, title, audio, video} of courses) {
-      if (!hidden.has(JSON.stringify([folder, code])) && title.toLowerCase().includes(query.toLowerCase())) {
-        rows.push(`<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, code))}"><span class="lesson-main"><span class="lesson-title">${esc(title)}</span><span class="lesson-meta">${esc(folder)}</span></span><span class="lesson-badges">${badges(audio, video)}</span></a></li>`);
+    const found = (await planImport(folder, storage)).courses.filter(course => !hidden.has(JSON.stringify([folder, course.code])));
+    if (browsing) {
+      const {inside, subs} = levelView(found, path);
+      if (path.length && !inside.length && !subs.length) return layout("התיקייה לא נמצאה", '<a href="/">חזרה לספרייה</a>', 404);
+      rows = inside.map(course => lessonRow(folder, course, ""));
+      subCards = subs.map(([name, count]) => `<li><a class="folder-card" href="${esc(navLink(folder, [...path, name]))}">${folderIcon}<span class="folder-name">${esc(name)}</span><span class="badge muted">${count}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`).join("");
+    } else {
+      for (const course of found) {
+        if (samePrefix(courseTrail(course), category ? path : []) && course.title.toLowerCase().includes(query.toLowerCase())) rows.push(lessonRow(folder, course, [folder, ...courseTrail(course)].join(" › ")));
       }
     }
   }
   const perPage = 30;
   const pageCount = Math.max(1, Math.ceil(rows.length / perPage));
   const page = Math.max(1, Math.min(pageCount, Number.parseInt(url.searchParams.get("page"), 10) || 1));
-  const pageLink = next => "/?" + new URLSearchParams({folder: category, q: query, page: next});
+  const pageLink = next => "/?" + new URLSearchParams({folder: category, ...(path.length ? {path: path.join("/")} : {}), q: query, page: next});
   const pager = pageCount > 1 ? `<nav class="pagination" aria-label="עמודי שיעורים">
     ${page > 1 ? `<a class="button" href="${esc(pageLink(page - 1))}">‹ העמוד הקודם</a>` : ""}
     <span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pageCount}</span>
     ${page < pageCount ? `<a class="button" href="${esc(pageLink(page + 1))}">העמוד הבא ›</a>` : ""}
   </nav>` : "";
-  return layout(category || "תוצאות חיפוש",
-    '<nav class="breadcrumbs" aria-label="מיקום בספרייה"><a href="/">הספרייה</a>' + (category ? `<span aria-hidden="true">‹</span><span>${esc(category)}</span>` : "") + '</nav>' + searchForm(true) +
-    `<div class="section-top"><h2 style="margin:0">${query ? "תוצאות חיפוש" : "שיעורים"}</h2><p>${rows.length} שיעורים</p></div>` +
+  const crumbs = ['<a href="/">הספרייה</a>'];
+  if (category) {
+    crumbs.push(path.length ? `<a href="${esc(navLink(category))}">${esc(category)}</a>` : `<span>${esc(category)}</span>`);
+    path.forEach((part, index) => crumbs.push(index === path.length - 1 ? `<span>${esc(part)}</span>` : `<a href="${esc(navLink(category, path.slice(0, index + 1)))}">${esc(part)}</a>`));
+  }
+  return layout(path.length ? path[path.length - 1] : category || "תוצאות חיפוש",
+    `<nav class="breadcrumbs" aria-label="מיקום בספרייה">${crumbs.join('<span aria-hidden="true">‹</span>')}</nav>` + searchForm(true) +
+    (subCards ? `<h2 style="margin-block-start:8px">תיקיות</h2><ul class="folder-grid" style="margin-block-end:26px">${subCards}</ul>` : "") +
+    ((rows.length || !subCards) ? `<div class="section-top"><h2 style="margin:0">${query ? "תוצאות חיפוש" : "שיעורים"}</h2><p>${rows.length} שיעורים</p></div>` : "") +
     (rows.length ? `<ul class="lesson-list">${rows.slice((page - 1) * perPage, page * perPage).join("")}</ul>`
-      : `<div class="panel empty-state"><p>${query ? "לא נמצאו שיעורים. נסו לשנות את החיפוש." : "עדיין אין שיעורים בקטגוריה זו."}</p></div>`) + pager);
+      : subCards ? "" : `<div class="panel empty-state"><p>${query ? "לא נמצאו שיעורים. נסו לשנות את החיפוש." : "עדיין אין שיעורים בקטגוריה זו."}</p></div>`) + pager);
 }
 
 export default {
