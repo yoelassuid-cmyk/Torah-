@@ -4,7 +4,8 @@ let gateKey = "";
 const adminCookie = "__Host-or_torah_admin";
 const gateLifetime = 7 * 86400;
 const accessEmail = "Yoelassuid@gmail.com";
-const mailLink = `mailto:${accessEmail}?subject=${encodeURIComponent("בקשת גישה לשיעורי אור תורה")}`;
+const siteName = "שיעורי דעת ויראת השם";
+const mailLink = `mailto:${accessEmail}?subject=${encodeURIComponent("בקשת גישה ל" + siteName)}`;
 
 const siteStyles = `
 :root {
@@ -181,7 +182,7 @@ details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 
 }
 `;
 
-const siteFooter = '<footer class="shell site-footer">אור תורה · שיעורי הרב נתן רוטמן</footer>';
+const siteFooter = `<footer class="shell site-footer">${siteName} · הרב נתן רוטמן</footer>`;
 
 const security = {
   "Cache-Control": "private, no-store",
@@ -197,7 +198,7 @@ function json(message, status = 200) {
 const hex = (buffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
 const hash = async (input) => hex(await crypto.subtle.digest("SHA-256", encode.encode(input)));
 
-const brandHtml = '<a class="brand" href="/"><span class="brand-mark" aria-hidden="true">א</span>אור תורה</a>';
+const brandHtml = `<a class="brand" href="/">${siteName}</a>`;
 
 async function gateSignature(value, signature) {
   const key = await crypto.subtle.importKey("raw", encode.encode(gateKey), {name: "HMAC", hash: "SHA-256"}, false, ["sign", "verify"]);
@@ -317,7 +318,7 @@ function layout(title, content, status = 200, opts = {}) {
     : opts.bare ? "" : '<a class="nav-link" href="/">הספרייה</a>';
   const script = opts.script ? `<script src="${opts.script}" defer></script>` : "";
   const heading = opts.heading === false ? "" : `<h1>${esc(title)}</h1>`;
-  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | אור תורה</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}${script}</body></html>`,
+  return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title === siteName ? title : title + " | " + siteName)}</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}${script}</body></html>`,
   {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + (opts.script ? "; script-src 'self'; connect-src 'self' https://*.backblaze.com https://*.backblazeb2.com" : "")}});
 }
 
@@ -881,7 +882,7 @@ async function b2Catalogue(request, env, url) {
       const locked = rules.get(folder).mode === "code" && !await open(folder);
       cards += `<li><a class="folder-card" href="${esc(backblazeCourseLink(folder))}">${folderIcon}<span class="folder-name">${esc(folder)}</span>${locked ? '<span class="badge muted">בקוד</span>' : ""}<span aria-hidden="true" class="folder-arrow">‹</span></a></li>`;
     }
-    return layout("שיעורי דעת ויראת השם", `<section class="hero"><h1>שיעורי<strong>דעת ויראת השם</strong></h1><p>צפייה, האזנה והורדה של השיעורים, מסודרים לפי נושאים.</p></section>${searchForm(false)}<h2 style="margin-block-start:8px">נושאים</h2>` + (cards
+    return layout(siteName, `<section class="hero"><h1>שיעורי<strong>דעת ויראת השם</strong></h1><p>צפייה, האזנה והורדה של השיעורים, מסודרים לפי נושאים.</p></section>${searchForm(false)}<h2 style="margin-block-start:8px">נושאים</h2>` + (cards
       ? `<ul class="folder-grid">${cards}</ul>`
       : '<div class="panel empty-state"><p>עדיין אין קטגוריות בספרייה.</p></div>'), 200, {heading: false});
   }
