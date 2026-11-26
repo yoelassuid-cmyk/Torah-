@@ -393,12 +393,32 @@ function similarFolder(a, b) {
   return true;
 }
 
-// The shorter title must be the beginning of the longer one (token by token), ignoring words like mp3/video.
+// Same word, or a one-letter spelling difference inside a longer word (ידים / ידיים).
+const sameToken = (x, y) => x === y || (x.length >= 4 && y.length >= 4 && !/\d/.test(x + y) && editDistance(x, y) <= 1);
+const isIndexToken = token => token.length <= 3 && /^(?:[\u05d0-\u05ea]{1,3}|\d{1,3})$/.test(token);
+
+// Two titles are "the same lesson" when:
+//  - the shorter one is the beginning of the longer one (token by token), or
+//  - both start with the same lesson number/letter (e.g. "ה") and the other words match: the shorter
+//    ones appear in order inside the longer, or at least 60% of the words are shared.
 function titleMatch(a, b) {
   const x = titleTokens(a), y = titleTokens(b);
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
   if (!short.length || short.join("").length < 4) return false;
-  return short.every((token, index) => token === long[index]);
+  if (short.every((token, index) => sameToken(token, long[index] ?? ""))) return true;
+  if (!isIndexToken(short[0]) || short[0] !== long[0]) return false;
+  const rest = short.slice(1), pool = long.slice(1);
+  if (!rest.length || rest.join("").length < 4) return false;
+  let at = 0;
+  for (const token of rest) { const found = pool.findIndex((candidate, index) => index >= at && sameToken(token, candidate)); if (found < 0) { at = -1; break; } at = found + 1; }
+  if (at >= 0) return true;
+  // Short tokens (א, ב, 2...) number the parts of a lesson: they must be identical for a loose match.
+  const smalls = list => list.filter(token => token.length <= 2).sort().join("|");
+  if (smalls(rest) !== smalls(pool)) return false;
+  const used = new Set();
+  let shared = 0;
+  for (const token of rest) { const found = pool.findIndex((candidate, index) => !used.has(index) && sameToken(token, candidate)); if (found >= 0) { used.add(found); shared += 1; } }
+  return shared / Math.max(rest.length, pool.length) >= 0.6;
 }
 
 const sameTitle = (a, b) => titleTokens(a).join(" ") === titleTokens(b).join(" ");
