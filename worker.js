@@ -166,6 +166,11 @@ details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 
 
 .row-select { width: min(240px, 100%); min-height: 44px; padding-block: 6px; }
 .row-select.invalid { border-color: var(--bad); }
+.picker { display: grid; gap: 8px; }
+.picker.invalid select:first-child { border-color: var(--bad); }
+.row-picker { display: flex; flex-wrap: wrap; gap: 6px; width: min(480px, 100%); }
+.row-picker > * { flex: 1 1 130px; min-width: 0; }
+.row-picker select, .row-picker input { min-height: 40px; padding-block: 4px; font-size: 15px; }
 .dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--muted); }
 .dropzone.over { border-color: var(--gold); background: var(--surface2); }
 .site-footer { border-top: 1px solid var(--line); padding-block: 22px 30px; color: var(--muted); font-size: .9rem; text-align: center; }
@@ -327,7 +332,7 @@ function layout(title, content, status = 200, opts = {}) {
   const nav = opts.admin
     ? `<a class="nav-link" href="/admin">ניהול</a><a class="nav-link" href="/admin?add=1">הוספת שיעור</a><a class="nav-link" href="/">לאתר</a>${logout}`
     : opts.bare ? "" : '<a class="nav-link" href="/">הספרייה</a>';
-  const script = opts.script ? `<script src="${opts.script}" defer></script>` : "";
+  const script = opts.script ? [].concat(opts.script).map(src => `<script src="${src}" defer></script>`).join("") : "";
   const heading = opts.heading === false ? "" : `<h1>${esc(title)}</h1>`;
   return new Response(`<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title === siteName ? title : title + " | " + siteName)}</title><link rel="stylesheet" href="/style.css"></head><body><header class="header"><div class="shell nav">${brandHtml}<nav class="nav-links" aria-label="ניווט ראשי">${nav}</nav></div></header><main class="shell page-main">${opts.before ?? ""}${heading}${content}</main>${siteFooter}${script}</body></html>`,
   {status,headers:{...security,"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src 'self' data: blob:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" + (opts.script ? "; script-src 'self'; connect-src 'self' https://*.backblaze.com https://*.backblazeb2.com" : "")}});
@@ -443,6 +448,7 @@ async function admin(request, env, url) {
   if (route === "/admin/course-visibility" && request.method === "POST") return setCourseVisibility(request, env);
   if (route === "/admin/backblaze-upload" && request.method === "POST") return addBackblazeCourse(request, env);
   if (route === "/admin/branding" && request.method === "POST") return saveBranding(request, env);
+  if (route === "/admin/subfolders" && request.method === "GET") return listSubfolders(env, url);
   if (route === "/admin/upload-url" && request.method === "POST") return prepareUpload(request, env);
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
@@ -632,11 +638,18 @@ function writeStatus(error) {
     ? error.message : "upload-error";
 }
 
-async function courseUploadForm(env, current, error = "", status = 200, check = "") {
+async function knownCategories(env) {
+  try {
+    const rules = await accessRules(env);
+    return [...new Set([...await backblazeFolders(await backblaze(env)), ...rules.keys()])].sort((a, b) => a.localeCompare(b, "he"));
+  } catch { return []; }
+}
+
+async function courseUploadForm(env, current, error = "", status = 200, check = "", initialPath = []) {
   const enabled = uploadReady(env);
-  let folders = [];
-  try { folders = await backblazeFolders(await backblaze(env)); } catch {}
-  const options = folders.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
+  const known = await knownCategories(env);
+  const options = known.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
+  const initial = current ? [current, ...initialPath] : [];
   return layout("הוספת שיעור", `<div class="panel stack">
     ${error ? notice(error, "error") : ""}
     ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה. בינתיים ניתן להעלות ישירות ל־Backblaze.", "info")}
@@ -645,8 +658,10 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
         <input type="hidden" name="upload_id" value="${crypto.randomUUID()}">
         <label>כותרת השיעור<input name="title" maxlength="180" required></label>
-        <label>קטגוריה<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label>
-        <label>או קטגוריה חדשה<input name="new_folder" maxlength="120" placeholder="שם הקטגוריה החדשה"></label>
+        <div><p style="margin:0 0 6px;font-weight:600;color:var(--text)">יעד: קטגוריה ותיקיית משנה</p>
+          <div data-picker data-categories="${esc(JSON.stringify(known))}" data-initial="${esc(JSON.stringify(initial))}"></div>
+          <noscript><label>קטגוריה<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label></noscript></div>
+        <label>או קטגוריה חדשה (במקום הבחירה למעלה)<input name="new_folder" maxlength="120" placeholder="שם הקטגוריה החדשה"></label>
         <label>קובץ שמע MP3 (אפשר גם בלי)<input type="file" name="audio" accept=".mp3,audio/mpeg"></label>
         <label>קובץ וידאו MP4 (אפשר גם בלי)<input type="file" name="video" accept=".mp4,video/mp4"></label>
         <progress data-progress hidden max="100" value="0" style="width:100%"></progress><p data-status role="status" hidden></p>
@@ -655,7 +670,7 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
       </fieldset>
     </form>
     ${enabled ? `<p style="margin-block:16px 0"><a href="/admin?add=1&amp;check=1">בדיקת החיבור להעלאה</a>${check ? ` · <span role="status" dir="auto">${esc(check)}</span>` : ""}</p>` : ""}
-  </div>`, status, {admin: true, script: "/upload.js"});
+  </div>`, status, {admin: true, script: ["/picker.js", "/upload.js"]});
 }
 
 const uploadScript = `(() => {
@@ -664,6 +679,9 @@ const uploadScript = `(() => {
   const bar = form.querySelector("[data-progress]");
   const status = form.querySelector("[data-status]");
   const button = form.querySelector("button.gold");
+  const holder = form.querySelector("[data-picker]");
+  const picker = holder && window.makePicker ? window.makePicker({categories: JSON.parse(holder.dataset.categories || "[]"), path: JSON.parse(holder.dataset.initial || "[]")}) : null;
+  if (picker) holder.append(picker.el);
   const note = (text, kind) => { status.textContent = text; status.className = "notice" + (kind ? " " + kind : ""); status.hidden = !text; };
   const encodeName = name => name.split("/").map(encodeURIComponent).join("/");
   const mb = bytes => (bytes / 1048576).toFixed(0) + "MB";
@@ -685,7 +703,9 @@ const uploadScript = `(() => {
     const audio = data.get("audio");
     const video = data.get("video");
     const title = String(data.get("title") || "").trim();
-    const folder = String(data.get("new_folder") || "").trim() || String(data.get("folder") || "").trim();
+    const newCategory = String(data.get("new_folder") || "").trim().replace(/[/\\\\]/g, " ");
+    const parts = newCategory ? [newCategory] : picker ? picker.get() : [String(data.get("folder") || "").trim()].filter(Boolean);
+    const folder = parts.join("/");
     if (!title || !folder) return note("יש למלא כותרת ולבחור קטגוריה.", "error");
     const files = [];
     if (video && video.size) files.push({kind: "video", file: video});
@@ -711,7 +731,7 @@ const uploadScript = `(() => {
         done += item.file.size;
       }
       window.onbeforeunload = null;
-      location.href = "/admin?" + new URLSearchParams({folder, published: "1"});
+      location.href = "/admin?" + new URLSearchParams(Object.assign({folder: parts[0], published: "1"}, parts.length > 1 ? {path: parts.slice(1).join("/")} : {}));
     } catch (error) {
       window.onbeforeunload = null;
       button.disabled = false;
@@ -723,7 +743,25 @@ const uploadScript = `(() => {
 })();
 `;
 
+const validFolderPath = value => typeof value === "string" && value.length <= 400 && value.split("/").length <= 8 && value.split("/").every(part => validUploadName(part, 120));
 const validUploadName = (value, max) => typeof value === "string" && value && value !== "." && value !== ".." && value.length <= max && !/[/\\\x00-\x1f\x7f]/.test(value);
+
+async function listSubfolders(env, url) {
+  const path = parsePath(url.searchParams.get("path"));
+  if (!path.length) return json("בקשה לא חוקית", 400);
+  try {
+    const storage = await backblaze(env);
+    const prefix = path.join("/") + "/";
+    const names = new Set();
+    let cursor;
+    do {
+      const page = await storage.list({prefix, delimiter: "/", cursor});
+      for (const item of page.objects) if (item.action === "folder") { const name = item.key.slice(prefix.length, -1); if (name && !isBatchId(name)) names.add(name); }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    return Response.json({folders: [...names].sort((a, b) => a.localeCompare(b, "he"))}, {headers: security});
+  } catch { return json("לא ניתן לטעון תיקיות", 502); }
+}
 
 async function prepareUpload(request, env) {
   if (!uploadReady(env)) return json("העלאה מהאתר דורשת הרשאת כתיבה ל־Backblaze.", 503);
@@ -738,7 +776,7 @@ async function prepareUpload(request, env) {
   const valid = items.length >= 1 && items.length <= 2 && kinds.size === items.length &&
     items.every(item => (item.kind === "audio" || item.kind === "video") && Number.isFinite(item.size) && item.size > 0 && item.size <= limit &&
       new RegExp("\\." + (item.kind === "audio" ? "mp3" : "mp4") + "$", "i").test(String(item.name ?? "")));
-  if (!validUploadName(folder, 120) || !validUploadName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) || !valid) return json("נתוני ההעלאה אינם תקינים", 400);
+  if (!validFolderPath(folder) || !validUploadName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) || !valid) return json("נתוני ההעלאה אינם תקינים", 400);
   try {
     const writer = await backblaze(env, true);
     const files = [];
@@ -753,6 +791,57 @@ async function prepareUpload(request, env) {
   }
 }
 
+const pickerScript = `(() => {
+  const cache = new Map();
+  const children = async path => {
+    const key = path.join("/");
+    if (cache.has(key)) return cache.get(key);
+    let folders = [];
+    try { const response = await fetch("/admin/subfolders?path=" + encodeURIComponent(key)); if (response.ok) folders = (await response.json()).folders || []; } catch (error) {}
+    cache.set(key, folders);
+    return folders;
+  };
+  const choose = (names, value, placeholder, onChange, disabled) => {
+    const select = document.createElement("select");
+    select.disabled = disabled;
+    const first = document.createElement("option"); first.value = ""; first.textContent = placeholder; select.append(first);
+    for (const name of names) { const option = document.createElement("option"); option.value = name; option.textContent = name; select.append(option); }
+    select.value = value;
+    select.addEventListener("change", () => onChange(select.value));
+    return select;
+  };
+  window.makePicker = ({categories, path = [], onChange = () => {}}) => {
+    const el = document.createElement("div");
+    el.className = "picker";
+    let selected = [...path];
+    let extra = "";
+    let disabled = false;
+    let ticket = 0;
+    const value = () => selected.concat(extra.trim() ? [extra.trim().replace(/[/\\\\]/g, " ")] : []);
+    const notify = () => onChange(value());
+    async function render() {
+      const mine = ++ticket;
+      const parts = [choose(categories, selected[0] || "", "בחירת קטגוריה", name => { selected = name ? [name] : []; render(); notify(); }, disabled)];
+      for (let i = 0; i < selected.length; i++) {
+        const subs = await children(selected.slice(0, i + 1));
+        if (mine !== ticket) return;
+        if (!subs.length) break;
+        parts.push(choose(subs, selected[i + 1] || "", "(בתיקייה זו, בלי תיקיית משנה)", name => { selected = selected.slice(0, i + 1); if (name) selected.push(name); render(); notify(); }, disabled));
+      }
+      if (selected.length) {
+        const input = document.createElement("input");
+        input.placeholder = "תיקייה חדשה בתוך זה (אופציונלי)"; input.maxLength = 100; input.value = extra; input.disabled = disabled;
+        input.addEventListener("input", () => { extra = input.value; notify(); });
+        parts.push(input);
+      }
+      if (mine === ticket) el.replaceChildren(...parts);
+    }
+    render();
+    return {el, get: value, set(next) { selected = [...next]; extra = ""; render(); notify(); }, disable(flag) { disabled = flag; render(); }};
+  };
+})();
+`;
+
 const uploadMultiScript = `(() => {
   const form = document.querySelector("form[data-multi-upload]");
   if (!form) return;
@@ -763,19 +852,28 @@ const uploadMultiScript = `(() => {
   const bar = form.querySelector("[data-progress]");
   const status = form.querySelector("[data-status]");
   const start = form.querySelector("[data-start]");
-  const picker = form.querySelector("select[name=folder]");
-  const batch = crypto.randomUUID();
+  const holder = form.querySelector("[data-picker]");
+  const categories = JSON.parse(holder.dataset.categories || "[]");
   const LIMIT = 4.5 * 1024 * 1024 * 1024;
   const numberRe = /(?:^|[\\s_\\-[\\u2013\\u2014])([0-9]{5,14})\\]?$/;
   const norm = text => text.normalize("NFC").trim().replace(/\\s+/g, " ").toLowerCase();
   const stemOf = name => name.replace(/\\.(mp3|mp4)$/i, "");
   const nice = stem => { const m = numberRe.exec(stem); return ((m ? stem.slice(0, m.index).trim() : stem) || stem); };
-  const mb = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(1) + "GB" : (bytes / 1048576).toFixed(0) + "MB";
+  const batch = crypto.randomUUID();
   let picked = [];
   let courses = [];
   let running = false;
+  let lastIgnored = 0;
+  let timer = 0;
+
+  const top = window.makePicker({categories, path: JSON.parse(holder.dataset.initial || "[]"), onChange: path => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { if (running || !path.length) return; for (const course of courses) if (course.state !== "done") course.picker.set(path); }, 350);
+  }});
+  holder.append(top.el);
 
   const note = (text, kind) => { status.textContent = text; status.className = "notice" + (kind ? " " + kind : ""); status.hidden = !text; };
+  const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; };
 
   function group() {
     const map = new Map();
@@ -793,23 +891,38 @@ const uploadMultiScript = `(() => {
     const old = new Map(courses.map(course => [course.key, course]));
     courses = [];
     for (const entry of map.values()) {
-      const prev = old.get(entry.key);
       const stem = stemOf((entry.mp3 || entry.mp4).name);
       let problem = "";
       if (entry.dupe) problem = "קבצים כפולים באותו שם";
       else if (stem.length > 180 || /[/\\\\]/.test(stem)) problem = "שם הקובץ ארוך או לא תקין";
       else if ((entry.mp3 && entry.mp3.size > LIMIT) || (entry.mp4 && entry.mp4.size > LIMIT)) problem = "הקובץ גדול מדי";
-      courses.push({key: entry.key, stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem, folder: prev ? prev.folder : picker.value, state: prev && prev.state === "done" ? "done" : "pending", error: ""});
+      let course = old.get(entry.key);
+      if (course) Object.assign(course, {stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem});
+      else {
+        course = {key: entry.key, stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem, path: top.get(), state: "pending", error: "", missing: false};
+        course.picker = window.makePicker({categories, path: course.path, onChange: next => { course.path = next; course.missing = false; course.picker.el.classList.remove("invalid"); updateSummary(); }});
+        course.picker.el.classList.add("row-picker");
+      }
+      courses.push(course);
     }
     courses.sort((a, b) => a.title.localeCompare(b.title, "he"));
-    return ignored;
+    lastIgnored = ignored.length;
   }
 
   const stateText = course => course.problem ? course.problem : course.state === "done" ? "הועלה ✓" : course.state === "busy" ? "מעלה…" : course.state === "failed" ? "נכשל: " + course.error : "ממתין";
 
-  function el(tag, cls, text) { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; }
+  function updateSummary() {
+    const both = courses.filter(course => course.mp3 && course.mp4).length;
+    const only3 = courses.filter(course => course.mp3 && !course.mp4).length;
+    const only4 = courses.filter(course => !course.mp3 && course.mp4).length;
+    const without = courses.filter(course => course.state !== "done" && !course.path.length).length;
+    summary.textContent = courses.length ? courses.length + " שיעורים · " + both + " עם MP3 ו־MP4 · " + only3 + " MP3 בלבד · " + only4 + " MP4 בלבד" + (without ? " · " + without + " ללא קטגוריה" : "") + (lastIgnored ? " · " + lastIgnored + " קבצים התעלמו" : "") : "";
+    const ready = courses.filter(course => !course.problem && course.state !== "done").length;
+    start.disabled = running || !ready;
+    start.textContent = courses.some(course => course.state === "failed") ? "נסו שוב את הנכשלים" : ready ? "העלאת " + ready + " שיעורים" : "העלאה";
+  }
 
-  function render(ignored) {
+  function render() {
     list.replaceChildren();
     for (const course of courses) {
       const row = el("li", "lesson-card");
@@ -819,13 +932,8 @@ const uploadMultiScript = `(() => {
       if (course.mp3) badges.append(el("span", "badge", "MP3"));
       if (course.mp4) badges.append(el("span", "badge", "MP4"));
       row.append(main, badges);
-      const choose = el("select", "row-select" + (course.missing ? " invalid" : ""));
-      choose.setAttribute("aria-label", "קטגוריה לשיעור " + course.title);
-      choose.disabled = running || course.state === "done";
-      for (const option of Array.from(picker.options)) { const copy = document.createElement("option"); copy.value = option.value; copy.textContent = option.value ? option.textContent : "בחירת קטגוריה"; choose.append(copy); }
-      choose.value = course.folder || "";
-      choose.addEventListener("change", () => { course.folder = choose.value; course.missing = false; choose.classList.remove("invalid"); render([]); });
-      row.append(choose);
+      course.picker.el.classList.toggle("invalid", Boolean(course.missing));
+      row.append(course.picker.el);
       if (!running && course.state !== "done") {
         const remove = el("button", "button small", "הסרה"); remove.type = "button";
         remove.addEventListener("click", () => { picked = picked.filter(file => file !== course.mp3 && file !== course.mp4); update(); });
@@ -833,22 +941,15 @@ const uploadMultiScript = `(() => {
       }
       list.append(row);
     }
-    const ready = courses.filter(course => !course.problem && course.state !== "done").length;
-    const both = courses.filter(course => course.mp3 && course.mp4).length;
-    const only3 = courses.filter(course => course.mp3 && !course.mp4).length;
-    const only4 = courses.filter(course => !course.mp3 && course.mp4).length;
-    summary.textContent = courses.length ? courses.length + " שיעורים · " + both + " עם MP3 ו־MP4 · " + only3 + " MP3 בלבד · " + only4 + " MP4 בלבד" + (courses.some(course => course.state !== "done" && !course.folder) ? " · " + courses.filter(course => course.state !== "done" && !course.folder).length + " ללא קטגוריה" : "") + (ignored.length ? " · " + ignored.length + " קבצים התעלמו" : "") : "";
-    start.disabled = running || !ready;
-    start.textContent = courses.some(course => course.state === "failed") ? "נסו שוב את הנכשלים" : ready ? "העלאת " + ready + " שיעורים" : "העלאה";
+    updateSummary();
   }
 
-  function update() { render(group()); }
+  function update() { group(); render(); }
 
   function addFiles(files) {
     for (const file of files) if (!picked.some(item => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) picked.push(file);
     update();
   }
-  picker.addEventListener("change", () => { if (!picker.value) return; for (const course of courses) if (course.state !== "done" && !running) { course.folder = picker.value; course.missing = false; } render([]); });
   input.addEventListener("change", () => { addFiles(Array.from(input.files)); input.value = ""; });
   ["dragenter", "dragover"].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.remove("over"); }));
@@ -867,26 +968,28 @@ const uploadMultiScript = `(() => {
     xhr.onerror = () => reject(new Error("network"));
     xhr.send(file);
   });
+  const adminLink = path => { const parts = path.split("/"); const params = {folder: parts[0]}; if (parts.length > 1) params.path = parts.slice(1).join("/"); return "/admin?" + new URLSearchParams(params); };
 
   form.addEventListener("submit", async event => {
     event.preventDefault();
     const todo = courses.filter(course => !course.problem && course.state !== "done");
     if (!todo.length) return;
-    const without = todo.filter(course => !course.folder);
-    if (without.length) { for (const course of without) course.missing = true; render([]); return note("יש לבחור קטגוריה לכל שיעור (" + without.length + " שיעורים ללא קטגוריה).", "error"); }
+    const without = todo.filter(course => !course.path.length);
+    if (without.length) { for (const course of without) course.missing = true; render(); return note("יש לבחור קטגוריה לכל שיעור (" + without.length + " שיעורים ללא קטגוריה).", "error"); }
     running = true; window.onbeforeunload = () => "ההעלאה בעיצומה";
+    top.disable(true); for (const course of courses) course.picker.disable(true);
     bar.hidden = false; bar.value = 0; note("");
     const total = todo.reduce((sum, course) => sum + (course.mp3 ? course.mp3.size : 0) + (course.mp4 ? course.mp4.size : 0), 0);
     let done = 0;
     for (const course of todo) {
-      course.state = "busy"; course.error = ""; render([]);
+      course.state = "busy"; course.error = ""; render();
       const files = [];
       if (course.mp4) files.push({kind: "video", file: course.mp4});
       if (course.mp3) files.push({kind: "audio", file: course.mp3});
       const size = files.reduce((sum, item) => sum + item.file.size, 0);
       try {
         const prepared = await fetch("/admin/upload-url", {method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({folder: course.folder, title: course.stem, upload_id: batch, files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})});
+          body: JSON.stringify({folder: course.path.join("/"), title: course.stem, upload_id: batch, files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})});
         const plan = await prepared.json().catch(() => ({}));
         if (!prepared.ok) throw new Error(plan.message || "prepare");
         let courseDone = 0;
@@ -900,36 +1003,37 @@ const uploadMultiScript = `(() => {
         done += size;
         course.state = "failed"; course.error = error.message === "network" ? "חיבור או CORS" : error.message;
       }
-      render([]);
+      render();
     }
     running = false; window.onbeforeunload = null;
+    top.disable(false); for (const course of courses) if (course.state !== "done") course.picker.disable(false);
     const failed = courses.filter(course => course.state === "failed").length;
     const okCount = courses.filter(course => course.state === "done").length;
     bar.value = 100;
     if (failed) note(okCount + " שיעורים הועלו, " + failed + " נכשלו. אפשר ללחוץ ״נסו שוב״.", "error");
-    else { note("כל " + okCount + " השיעורים הועלו בהצלחה.");
-      const folders = [...new Set(courses.map(course => course.folder))];
-      const link = el("a", "button gold", folders.length === 1 ? "מעבר לקטגוריה" : "מעבר לניהול"); link.href = folders.length === 1 ? "/admin?" + new URLSearchParams({folder: folders[0]}) : "/admin"; link.style.marginBlockStart = "12px"; status.append(" ", link); }
-    render([]);
+    else {
+      note("כל " + okCount + " השיעורים הועלו בהצלחה.");
+      const targets = [...new Set(courses.map(course => course.path.join("/")))];
+      const link = el("a", "button gold", targets.length === 1 ? "מעבר לתיקייה" : "מעבר לניהול");
+      link.href = targets.length === 1 ? adminLink(targets[0]) : "/admin"; link.style.marginBlockStart = "12px"; status.append(" ", link);
+    }
+    render();
   });
   update();
 })();
 `;
 
-async function courseMultiForm(env, current, status = 200) {
+async function courseMultiForm(env, current, status = 200, initialPath = []) {
   const enabled = uploadReady(env);
-  let known = [];
-  try {
-    const rules = await accessRules(env);
-    known = [...new Set([...await backblazeFolders(await backblaze(env)), ...rules.keys()])].sort((a, b) => a.localeCompare(b, "he"));
-  } catch {}
-  const options = known.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
+  const known = await knownCategories(env);
+  const initial = current ? [current, ...initialPath] : [];
   return layout("הוספת כמה שיעורים", `<div class="panel">
     ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה.", "info")}
-    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ. בכל שיעור בוחרים בנפרד את הקטגוריה שלו. קובץ בלי זוג (MP3 בלבד או MP4 בלבד) הופך לשיעור נפרד.</p>
+    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ. בכל שיעור בוחרים בנפרד את הקטגוריה ותיקיית המשנה שלו. קובץ בלי זוג (MP3 בלבד או MP4 בלבד) הופך לשיעור נפרד.</p>
     <form class="form-grid" data-multi-upload>
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
-        <label>החלת קטגוריה על כל השיעורים (אופציונלי: אפשר לבחור בנפרד בכל שיעור)<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label>
+        <div><p style="margin:0 0 6px;font-weight:600;color:var(--text)">החלת יעד על כל השיעורים (אופציונלי: אפשר לבחור בנפרד בכל שיעור)</p>
+          <div data-picker data-categories="${esc(JSON.stringify(known))}" data-initial="${esc(JSON.stringify(initial))}"></div></div>
         ${known.length ? "" : '<p class="notice info">אין עדיין קטגוריות. צרו קטגוריה בדף הניהול קודם.</p>'}
         <div class="dropzone" data-drop><p style="margin:0 0 12px">גררו לכאן את הקבצים, או בחרו אותם</p>
           <input type="file" multiple accept=".mp3,.mp4,audio/mpeg,video/mp4" data-files></div>
@@ -941,7 +1045,7 @@ async function courseMultiForm(env, current, status = 200) {
       </fieldset>
     </form>
     <p style="margin-block:16px 0">שיעור בודד? <a href="/admin?add=1${current ? "&amp;folder=" + encodeURIComponent(current) : ""}">הוספת שיעור אחד</a></p>
-  </div>`, status, {admin: true, script: "/upload-multi.js"});
+  </div>`, status, {admin: true, script: ["/picker.js", "/upload-multi.js"]});
 }
 
 const bytesFromBase64 = text => Uint8Array.from(atob(text), char => char.charCodeAt(0));
@@ -1160,7 +1264,7 @@ const adminHref = params => "/admin?" + new URLSearchParams(Object.fromEntries(O
 async function backblazeAdmin(env, url) {
   const current = url.searchParams.get("folder") ?? "";
   if (url.searchParams.has("branding")) return brandingPage(env, url);
-  if (url.searchParams.get("add") === "multi") return courseMultiForm(env, current);
+  if (url.searchParams.get("add") === "multi") return courseMultiForm(env, current, 200, parsePath(url.searchParams.get("path")));
   if (url.searchParams.has("add")) {
     let check = "";
     if (uploadReady(env) && url.searchParams.has("check")) {
@@ -1171,7 +1275,7 @@ async function backblazeAdmin(env, url) {
         check = writeStatus(error);
       }
     }
-    return courseUploadForm(env, current, "", 200, check);
+    return courseUploadForm(env, current, "", 200, check, parsePath(url.searchParams.get("path")));
   }
   const actions = '<div class="toolbar"><a class="button gold" href="/admin?add=multi">+ הוספת כמה שיעורים</a><a class="button" href="/admin?add=1">+ שיעור אחד</a><a class="button" href="/admin?branding=1">מיתוג</a><a class="button" href="/">צפייה באתר</a><a class="button" href="https://secure.backblaze.com/user_signin.htm" target="_blank" rel="noopener noreferrer">פתיחת Backblaze</a></div>';
   const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. אפשר גם להעלות MP3 בלבד או MP4 בלבד: כל קובץ בלי זוג הופך לשיעור נפרד.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
@@ -1214,7 +1318,7 @@ async function backblazeAdmin(env, url) {
     const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
     const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, path: path.join("/"), ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
     const unset = rules.has(current) ? "" : notice("הקטגוריה הזו מוסתרת מהאתר. בחרו ״ציבורית״ או ״מוגנת בקוד״ ולחצו ״שמירה״ כדי שהשיעורים יופיעו.", "error");
-    return layout(path.length ? path[path.length - 1] : current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current}))) + (path.length ? "" : accessPanel(current, rules.get(current))) + `
+    return layout(path.length ? path[path.length - 1] : current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current, path: path.join("/")}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current, path: path.join("/")}))) + (path.length ? "" : accessPanel(current, rules.get(current))) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat"><b>${mp3Only}</b><span>MP3 בלבד</span></div><div class="stat"><b>${mp4Only}</b><span>MP4 בלבד</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${path.length ? `<input type="hidden" name="path" value="${esc(path.join("/"))}">` : ""}${only ? `<input type="hidden" name="only" value="${only}">` : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !only)}${chip(`MP3 בלבד (${mp3Only})`, {q, only: "mp3"}, only === "mp3")}${chip(`MP4 בלבד (${mp4Only})`, {q, only: "mp4"}, only === "mp4")}</div>
@@ -1338,6 +1442,7 @@ export default {
     const path = url.pathname;
     if (path === "/style.css") return new Response(siteStyles, {headers:{"Content-Type":"text/css; charset=utf-8", "Cache-Control":"no-cache"}});
     if (path === "/upload-multi.js") return new Response(uploadMultiScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
+    if (path === "/picker.js") return new Response(pickerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/upload.js") return new Response(uploadScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/branding.js") return new Response(brandingScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/player.js") return new Response(playerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
