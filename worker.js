@@ -507,15 +507,6 @@ async function planImport(folder, storage) {
       merged.add(v);
     }
   }
-  // Second pass: leftovers anywhere in the category (e.g. loose videos at the root, MP3s in sub-folders): unique mutual title match only.
-  const looseAudio = courses.filter(course => course.audio && !course.video);
-  const looseVideo = courses.filter(course => course.video && !course.audio && !merged.has(course));
-  for (const a of looseAudio) {
-    const v = uniqueCandidate(looseVideo.filter(item => !merged.has(item)), item => compatible(a, item), item => sameTitle(a.title, item.title));
-    if (!v || uniqueCandidate(looseAudio.filter(item => !item.video), item => compatible(item, v), item => sameTitle(item.title, v.title)) !== a) continue;
-    a.video = v.video;
-    merged.add(v);
-  }
   courses.splice(0, courses.length, ...courses.filter(course => !merged.has(course)));
   const counts = new Map();
   for (const course of courses) counts.set(course.code, (counts.get(course.code) ?? 0) + 1);
