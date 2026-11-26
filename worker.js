@@ -548,6 +548,32 @@ async function planImport(folder, storage) {
       merged.add(v);
     }
   }
+  // Second pass: same LAST folder name under a different path (e.g. הלכה/מועדים and הלכה/אורח חיים/מועדים).
+  // Only identical/clearly matching titles, or the single leftover pair of that folder, are joined.
+  const leafGroups = [];
+  for (const course of courses) {
+    if (merged.has(course) || Boolean(course.audio) === Boolean(course.video) || !course.trail.length) continue;
+    const leaf = course.trail[course.trail.length - 1];
+    let group = leafGroups.find(entry => similarFolder(entry.leaf, leaf));
+    if (!group) { group = {leaf, items: []}; leafGroups.push(group); }
+    group.items.push(course);
+  }
+  const sharesWord = (a, b) => titleTokens(a).some(token => token.length >= 4 && !genericWords.has(token) && titleTokens(b).some(other => looseToken(token, other)));
+  for (const {items} of leafGroups) {
+    const audios = () => items.filter(course => course.audio && !course.video);
+    const videos = () => items.filter(course => course.video && !course.audio && !merged.has(course));
+    for (const a of audios()) {
+      const v = uniqueCandidate(videos(), item => compatible(a, item), item => sameTitle(a.title, item.title));
+      if (!v || uniqueCandidate(audios(), item => compatible(item, v), item => sameTitle(item.title, v.title)) !== a) continue;
+      a.video = v.video;
+      merged.add(v);
+    }
+    const left = audios(), right = videos();
+    if (left.length === 1 && right.length === 1 && sharesWord(left[0].title, right[0].title)) {
+      left[0].video = right[0].video;
+      merged.add(right[0]);
+    }
+  }
   courses.splice(0, courses.length, ...courses.filter(course => !merged.has(course)));
   const counts = new Map();
   for (const course of courses) counts.set(course.code, (counts.get(course.code) ?? 0) + 1);
