@@ -158,6 +158,8 @@ details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 
 .gate-card .button { width: 100%; }
 .gate-error { color: var(--bad); }
 
+.row-select { width: min(240px, 100%); min-height: 44px; padding-block: 6px; }
+.row-select.invalid { border-color: var(--bad); }
 .dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--muted); }
 .dropzone.over { border-color: var(--gold); background: var(--surface2); }
 .site-footer { border-top: 1px solid var(--line); padding-block: 22px 30px; color: var(--muted); font-size: .9rem; text-align: center; }
@@ -735,7 +737,7 @@ const uploadMultiScript = `(() => {
       if (entry.dupe) problem = "קבצים כפולים באותו שם";
       else if (stem.length > 180 || /[/\\\\]/.test(stem)) problem = "שם הקובץ ארוך או לא תקין";
       else if ((entry.mp3 && entry.mp3.size > LIMIT) || (entry.mp4 && entry.mp4.size > LIMIT)) problem = "הקובץ גדול מדי";
-      courses.push({key: entry.key, stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem, state: prev && prev.state === "done" ? "done" : "pending", error: ""});
+      courses.push({key: entry.key, stem, title: nice(stem), mp3: entry.mp3, mp4: entry.mp4, problem, folder: prev ? prev.folder : picker.value, state: prev && prev.state === "done" ? "done" : "pending", error: ""});
     }
     courses.sort((a, b) => a.title.localeCompare(b.title, "he"));
     return ignored;
@@ -755,6 +757,13 @@ const uploadMultiScript = `(() => {
       if (course.mp3) badges.append(el("span", "badge", "MP3"));
       if (course.mp4) badges.append(el("span", "badge", "MP4"));
       row.append(main, badges);
+      const choose = el("select", "row-select" + (course.missing ? " invalid" : ""));
+      choose.setAttribute("aria-label", "קטגוריה לשיעור " + course.title);
+      choose.disabled = running || course.state === "done";
+      for (const option of Array.from(picker.options)) { const copy = document.createElement("option"); copy.value = option.value; copy.textContent = option.value ? option.textContent : "בחירת קטגוריה"; choose.append(copy); }
+      choose.value = course.folder || "";
+      choose.addEventListener("change", () => { course.folder = choose.value; course.missing = false; choose.classList.remove("invalid"); render([]); });
+      row.append(choose);
       if (!running && course.state !== "done") {
         const remove = el("button", "button small", "הסרה"); remove.type = "button";
         remove.addEventListener("click", () => { picked = picked.filter(file => file !== course.mp3 && file !== course.mp4); update(); });
@@ -766,7 +775,7 @@ const uploadMultiScript = `(() => {
     const both = courses.filter(course => course.mp3 && course.mp4).length;
     const only3 = courses.filter(course => course.mp3 && !course.mp4).length;
     const only4 = courses.filter(course => !course.mp3 && course.mp4).length;
-    summary.textContent = courses.length ? courses.length + " שיעורים · " + both + " עם MP3 ו־MP4 · " + only3 + " MP3 בלבד · " + only4 + " MP4 בלבד" + (ignored.length ? " · " + ignored.length + " קבצים התעלמו" : "") : "";
+    summary.textContent = courses.length ? courses.length + " שיעורים · " + both + " עם MP3 ו־MP4 · " + only3 + " MP3 בלבד · " + only4 + " MP4 בלבד" + (courses.some(course => course.state !== "done" && !course.folder) ? " · " + courses.filter(course => course.state !== "done" && !course.folder).length + " ללא קטגוריה" : "") + (ignored.length ? " · " + ignored.length + " קבצים התעלמו" : "") : "";
     start.disabled = running || !ready;
     start.textContent = courses.some(course => course.state === "failed") ? "נסו שוב את הנכשלים" : ready ? "העלאת " + ready + " שיעורים" : "העלאה";
   }
@@ -777,6 +786,7 @@ const uploadMultiScript = `(() => {
     for (const file of files) if (!picked.some(item => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) picked.push(file);
     update();
   }
+  picker.addEventListener("change", () => { if (!picker.value) return; for (const course of courses) if (course.state !== "done" && !running) { course.folder = picker.value; course.missing = false; } render([]); });
   input.addEventListener("change", () => { addFiles(Array.from(input.files)); input.value = ""; });
   ["dragenter", "dragover"].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach(type => drop.addEventListener(type, event => { event.preventDefault(); drop.classList.remove("over"); }));
@@ -798,10 +808,10 @@ const uploadMultiScript = `(() => {
 
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    const folder = String(picker.value || "").trim();
-    if (!folder) return note("יש לבחור קטגוריה.", "error");
     const todo = courses.filter(course => !course.problem && course.state !== "done");
     if (!todo.length) return;
+    const without = todo.filter(course => !course.folder);
+    if (without.length) { for (const course of without) course.missing = true; render([]); return note("יש לבחור קטגוריה לכל שיעור (" + without.length + " שיעורים ללא קטגוריה).", "error"); }
     running = true; window.onbeforeunload = () => "ההעלאה בעיצומה";
     bar.hidden = false; bar.value = 0; note("");
     const total = todo.reduce((sum, course) => sum + (course.mp3 ? course.mp3.size : 0) + (course.mp4 ? course.mp4.size : 0), 0);
@@ -814,7 +824,7 @@ const uploadMultiScript = `(() => {
       const size = files.reduce((sum, item) => sum + item.file.size, 0);
       try {
         const prepared = await fetch("/admin/upload-url", {method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({folder, title: course.stem, upload_id: batch, files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})});
+          body: JSON.stringify({folder: course.folder, title: course.stem, upload_id: batch, files: files.map(item => ({kind: item.kind, name: item.file.name, size: item.file.size}))})});
         const plan = await prepared.json().catch(() => ({}));
         if (!prepared.ok) throw new Error(plan.message || "prepare");
         let courseDone = 0;
@@ -836,7 +846,8 @@ const uploadMultiScript = `(() => {
     bar.value = 100;
     if (failed) note(okCount + " שיעורים הועלו, " + failed + " נכשלו. אפשר ללחוץ ״נסו שוב״.", "error");
     else { note("כל " + okCount + " השיעורים הועלו בהצלחה.");
-      const link = el("a", "button gold", "מעבר לקטגוריה"); link.href = "/admin?" + new URLSearchParams({folder}); link.style.marginBlockStart = "12px"; status.append(" ", link); }
+      const folders = [...new Set(courses.map(course => course.folder))];
+      const link = el("a", "button gold", folders.length === 1 ? "מעבר לקטגוריה" : "מעבר לניהול"); link.href = folders.length === 1 ? "/admin?" + new URLSearchParams({folder: folders[0]}) : "/admin"; link.style.marginBlockStart = "12px"; status.append(" ", link); }
     render([]);
   });
   update();
@@ -853,10 +864,10 @@ async function courseMultiForm(env, current, status = 200) {
   const options = known.map(folder => `<option value="${esc(folder)}"${folder === current ? " selected" : ""}>${esc(folder)}</option>`).join("");
   return layout("הוספת כמה שיעורים", `<div class="panel">
     ${enabled ? "" : notice("העלאה מהאתר תיפתח לאחר חיבור הרשאת כתיבה.", "info")}
-    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ. קובץ בלי זוג (MP3 בלבד או MP4 בלבד) הופך לשיעור נפרד.</p>
+    <p>בחרו או גררו את כל קבצי ה־MP3 וה־MP4 ביחד. האתר מתאים אוטומטית כל MP3 ל־MP4 עם אותו שם, וכותרת השיעור נלקחת משם הקובץ. בכל שיעור בוחרים בנפרד את הקטגוריה שלו. קובץ בלי זוג (MP3 בלבד או MP4 בלבד) הופך לשיעור נפרד.</p>
     <form class="form-grid" data-multi-upload>
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
-        <label>קטגוריה<select name="folder" required><option value="">בחירת קטגוריה</option>${options}</select></label>
+        <label>החלת קטגוריה על כל השיעורים (אופציונלי: אפשר לבחור בנפרד בכל שיעור)<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label>
         ${known.length ? "" : '<p class="notice info">אין עדיין קטגוריות. צרו קטגוריה בדף הניהול קודם.</p>'}
         <div class="dropzone" data-drop><p style="margin:0 0 12px">גררו לכאן את הקבצים, או בחרו אותם</p>
           <input type="file" multiple accept=".mp3,.mp4,audio/mpeg,video/mp4" data-files></div>
