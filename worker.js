@@ -881,7 +881,7 @@ async function b2Catalogue(request, env, url) {
       const locked = rules.get(folder).mode === "code" && !await open(folder);
       cards += `<li><a class="folder-card" href="${esc(backblazeCourseLink(folder))}">${folderIcon}<span class="folder-name">${esc(folder)}</span>${locked ? '<span class="badge muted">בקוד</span>' : ""}<span aria-hidden="true" class="folder-arrow">‹</span></a></li>`;
     }
-    return layout("שיעורי הרב נתן רוטמן", `<section class="hero"><h1>שיעורי<strong>הרב נתן רוטמן</strong></h1><p>צפייה, האזנה והורדה של השיעורים, מסודרים לפי נושאים.</p></section>${searchForm(false)}<h2 style="margin-block-start:8px">נושאים</h2>` + (cards
+    return layout("שיעורי דעת ויראת השם", `<section class="hero"><h1>שיעורי<strong>דעת ויראת השם</strong></h1><p>צפייה, האזנה והורדה של השיעורים, מסודרים לפי נושאים.</p></section>${searchForm(false)}<h2 style="margin-block-start:8px">נושאים</h2>` + (cards
       ? `<ul class="folder-grid">${cards}</ul>`
       : '<div class="panel empty-state"><p>עדיין אין קטגוריות בספרייה.</p></div>'), 200, {heading: false});
   }
