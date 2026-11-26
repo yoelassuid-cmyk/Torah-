@@ -140,7 +140,7 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .danger-zone summary { color: var(--bad); }
 .danger-zone form { margin-block-start: 10px; }
 label.check { display: flex; align-items: center; gap: 10px; font-weight: 500; }
-input[type=checkbox], input[type=radio] { width: 22px; height: 22px; min-height: 0; accent-color: var(--gold); flex: none; }
+input[type=checkbox], input[type=radio] { width: 24px; height: 24px; min-height: 0; padding: 0; accent-color: var(--gold); background: #f5f0e6; border: 2px solid var(--gold); flex: none; }
 .row-menu summary { cursor: pointer; color: var(--muted); font-size: .9rem; padding: 6px 4px; }
 .row-menu { grid-column: 1 / -1; }
 .row-menu[open] { padding-block-start: 6px; border-top: 1px solid var(--line); }
@@ -823,7 +823,8 @@ async function backblazeAdmin(env, url) {
     const pageHref = n => esc(adminHref({folder: current, q, ...(onlyMissing ? {missing: 1} : {}), page: n}));
     const pager = pages > 1 ? `<nav class="pagination" aria-label="עמודים">${page > 1 ? `<a class="button" href="${pageHref(page - 1)}">‹ הקודם</a>` : ""}<span style="align-self:center;color:var(--muted)">עמוד ${page} מתוך ${pages}</span>${page < pages ? `<a class="button" href="${pageHref(page + 1)}">הבא ›</a>` : ""}</nav>` : "";
     const chip = (label, params, active) => `<a href="${esc(adminHref({folder: current, ...params}))}"${active ? ' aria-current="true"' : ""}>${label}</a>`;
-    return layout(current, flash + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + accessPanel(current, rules.get(current)) + `
+    const unset = rules.has(current) ? "" : notice("הקטגוריה הזו מוסתרת מהאתר. בחרו ״ציבורית״ או ״מוגנת בקוד״ ולחצו ״שמירה״ כדי שהשיעורים יופיעו.", "error");
+    return layout(current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current}))) + accessPanel(current, rules.get(current)) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat${missing ? " warn" : ""}"><b>${missing}</b><span>חסר MP4</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${onlyMissing ? '<input type="hidden" name="missing" value="1">' : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !onlyMissing)}${chip(`חסר MP4 (${missing})`, {q, missing: 1}, onlyMissing)}</div>
