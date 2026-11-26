@@ -351,6 +351,73 @@ async function adminAuthorized(request, origin) {
   return Boolean(m && Number(m[1]) > Date.now()/1000 && await gateSignature(`admin:${origin}:${m[1]}`,m[2]));
 }
 
+// ---- fuzzy matching of folder names and titles (small spelling differences, title prefixes)
+const markerWords = new Set(["mp3", "mp4", "audio", "video", "שמע", "וידאו", "וידיאו", "אודיו", "סרטון", "קלטת", "הקלטה"]);
+const tokensOf = text => text.normalize("NFC").toLowerCase().replace(/[\u0591-\u05c7]/g, "").replace(/[\p{P}\p{S}_]+/gu, " ").split(/\s+/).filter(Boolean);
+const titleTokens = text => tokensOf(text).filter(token => !markerWords.has(token));
+
+function editDistance(a, b) {
+  let previous = Array.from({length: b.length + 1}, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    previous = row;
+  }
+  return previous[b.length];
+}
+
+// Same folder if the names are equal once punctuation/spaces/niqqud are ignored, or differ by a letter inside a long word.
+function similarFolder(a, b) {
+  if (a === b) return true;
+  const x = tokensOf(a), y = tokensOf(b);
+  if (x.join("") === y.join("")) return true;
+  if (x.length !== y.length) return false;
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] === y[i]) continue;
+    if (x[i].length < 3 || y[i].length < 3 || /\d/.test(x[i] + y[i]) || (Math.min(x[i].length, y[i].length) < 4 && x.join("").length < 6)) return false;
+    if (editDistance(x[i], y[i]) > (Math.max(x[i].length, y[i].length) >= 8 ? 2 : 1)) return false;
+  }
+  return true;
+}
+
+// The shorter title must be the beginning of the longer one (token by token), ignoring words like mp3/video.
+function titleMatch(a, b) {
+  const x = titleTokens(a), y = titleTokens(b);
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  if (!short.length || short.join("").length < 4) return false;
+  return short.every((token, index) => token === long[index]);
+}
+
+// Canonical folder trail of every course: similar sibling folders are merged under the most common spelling.
+function canonicalTrails(courses) {
+  const raws = courses.map(course => course.folder.split("/").slice(1).filter(part => !isBatchId(part)));
+  const canon = raws.map(() => []);
+  const depth = Math.max(0, ...raws.map(trail => trail.length));
+  for (let level = 0; level < depth; level++) {
+    const groups = new Map();
+    raws.forEach((trail, index) => {
+      if (trail.length <= level) return;
+      const parent = canon[index].join("/");
+      const names = groups.get(parent) ?? new Map();
+      const info = names.get(trail[level]) ?? {audio: 0, count: 0};
+      info.count += 1;
+      if (courses[index].audio) info.audio += 1;
+      names.set(trail[level], info);
+      groups.set(parent, names);
+    });
+    const choice = new Map();
+    for (const [parent, names] of groups) {
+      const clusters = [];
+      for (const [name] of [...names].sort((a, b) => b[1].audio - a[1].audio || b[1].count - a[1].count || a[0].length - b[0].length || a[0].localeCompare(b[0], "he"))) {
+        const hit = clusters.find(rep => similarFolder(rep, name));
+        if (hit) choice.set(parent + "\0" + name, hit); else { clusters.push(name); choice.set(parent + "\0" + name, name); }
+      }
+    }
+    raws.forEach((trail, index) => { if (trail.length > level) canon[index].push(choice.get(canon[index].join("/") + "\0" + trail[level])); });
+  }
+  return canon;
+}
+
 async function planImport(folder, storage) {
   const groups = new Map();
   const notes = [];
@@ -409,6 +476,31 @@ async function planImport(folder, storage) {
     const code = (await hash(identity)).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5");
     courses.push({code, title: main.title, audio, video, folder: main.key.slice(0, main.key.lastIndexOf("/"))});
   }
+  // Fuzzy pass: one MP3-only course and one MP4-only course in the same (similar) folder whose titles start the same are one lesson.
+  const trails = canonicalTrails(courses);
+  courses.forEach((course, index) => { course.trail = trails[index]; });
+  const buckets = new Map();
+  for (const course of courses) {
+    if (Boolean(course.audio) === Boolean(course.video)) continue;
+    const key = course.trail.join("/");
+    buckets.set(key, [...(buckets.get(key) ?? []), course]);
+  }
+  const merged = new Set();
+  for (const list of buckets.values()) {
+    const audios = list.filter(course => course.audio);
+    const videos = list.filter(course => course.video);
+    if (!audios.length || !videos.length) continue;
+    const compatible = (a, v) => !(a.audio.number && v.video.number && a.audio.number !== v.video.number) && titleMatch(a.title, v.title);
+    for (const a of audios) {
+      const options = videos.filter(v => !merged.has(v) && compatible(a, v));
+      if (options.length !== 1) continue;
+      const [v] = options;
+      if (audios.filter(other => compatible(other, v)).length !== 1) continue;
+      a.video = v.video;
+      merged.add(v);
+    }
+  }
+  courses.splice(0, courses.length, ...courses.filter(course => !merged.has(course)));
   const counts = new Map();
   for (const course of courses) counts.set(course.code, (counts.get(course.code) ?? 0) + 1);
   const valid = courses.filter(course => {
@@ -606,7 +698,7 @@ async function backblazeFolders(storage) {
 const folderIcon = '<span class="folder-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>';
 
 const isBatchId = part => /^[a-f0-9-]{36}$/.test(part);
-const courseTrail = course => course.folder.split("/").slice(1).filter(part => !isBatchId(part));
+const courseTrail = course => course.trail ?? course.folder.split("/").slice(1).filter(part => !isBatchId(part));
 const parsePath = value => String(value ?? "").split("/").filter(part => part && part !== "." && part !== "..").slice(0, 12);
 const samePrefix = (trail, path) => path.every((part, index) => trail[index] === part);
 const navLink = (folder, path = []) => "/?" + new URLSearchParams(path.length ? {folder, path: path.join("/")} : {folder});
