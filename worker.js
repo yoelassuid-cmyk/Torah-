@@ -140,7 +140,7 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .video-wrap { position: relative; }
 .video-logo { position: absolute; top: 10px; right: 10px; width: clamp(180px, 34%, 340px); height: auto; opacity: .97; pointer-events: none; z-index: 2; }
 .video-wrap { background: #000; border-radius: 10px; overflow: hidden; }
-.video-wrap video::-webkit-media-controls-fullscreen-button { display: none; }
+.video-wrap.custom-fs video::-webkit-media-controls-fullscreen-button { display: none; }
 .vfs-btn { position: absolute; top: 10px; left: 10px; z-index: 3; width: 42px; height: 42px; border-radius: 10px; border: 1px solid #ffffff44; background: #000a; color: #fff; font-size: 1.25rem; cursor: pointer; }
 .video-wrap.is-fs { position: fixed; inset: 0; z-index: 1000; width: 100%; height: 100%; border-radius: 0; display: flex; align-items: center; justify-content: center; }
 .video-wrap.is-fs video { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; }
@@ -1639,6 +1639,10 @@ const videoScript = `(() => {
   const wrap = document.querySelector(".video-wrap");
   const video = wrap && wrap.querySelector("video");
   if (!video) return;
+  // Apple devices keep Safari's own fullscreen (the in-page version did not work well there).
+  const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (apple) return;
+  wrap.classList.add("custom-fs");
   video.setAttribute("controlsList", "nofullscreen");
   const button = document.createElement("button");
   button.type = "button"; button.className = "vfs-btn"; button.setAttribute("aria-label", "מסך מלא"); button.textContent = "⛶";
