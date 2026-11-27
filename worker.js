@@ -206,6 +206,9 @@ details.help ol { color: var(--muted); padding-inline-start: 22px; margin: 12px 
 .row-picker { display: flex; flex-wrap: wrap; gap: 6px; width: min(480px, 100%); }
 .row-picker > * { flex: 1 1 130px; min-width: 0; }
 .row-picker select, .row-picker input { min-height: 40px; padding-block: 4px; font-size: 15px; }
+.refresh-box { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-block: 14px; }
+.refresh-box span, .refresh-line span { color: var(--muted); font-size: .95rem; }
+.refresh-line { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-block: 0 12px; }
 .dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--muted); }
 .dropzone.over { border-color: var(--gold); background: var(--surface2); }
 .site-footer { border-top: 1px solid var(--line); padding-block: 22px 30px; color: var(--muted); font-size: .9rem; text-align: center; }
@@ -270,6 +273,9 @@ async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_access (folder TEXT PRIMARY KEY, mode TEXT NOT NULL, code_hash TEXT)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue (folder TEXT NOT NULL, gen TEXT NOT NULL, code TEXT NOT NULL, title TEXT NOT NULL, trail TEXT NOT NULL, solo INTEGER NOT NULL DEFAULT 0, dir TEXT NOT NULL, audio_key TEXT, audio_id TEXT, video_key TEXT, video_id TEXT, PRIMARY KEY (folder, gen, code))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue_meta (folder TEXT PRIMARY KEY, gen TEXT NOT NULL, updated INTEGER NOT NULL, count INTEGER NOT NULL, notes TEXT NOT NULL DEFAULT '[]', sig TEXT NOT NULL DEFAULT '')"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS course_views (folder TEXT NOT NULL, course_id TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (folder, course_id))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS site_assets (name TEXT PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_attempts (k TEXT PRIMARY KEY, period INTEGER NOT NULL, tries INTEGER NOT NULL)")
@@ -645,6 +651,7 @@ async function admin(request, env, url) {
   if (route === "/admin/branding" && request.method === "POST") return saveBranding(request, env);
   if (route === "/admin/subfolders" && request.method === "GET") return listSubfolders(env, url);
   if (route === "/admin/upload-url" && request.method === "POST") return prepareUpload(request, env);
+  if (route === "/admin/catalogue-refresh" && request.method === "POST") return refreshCatalogue(request, env);
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
@@ -932,6 +939,8 @@ const uploadScript = `(() => {
         await send(target, item.file, loaded => { bar.value = Math.round(((done + loaded) / total) * 100); });
         done += item.file.size;
       }
+      note("מעדכנים את הקטלוג…");
+      await fetch("/admin/catalogue-refresh", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({folders: [parts[0]]})}).catch(() => {});
       window.onbeforeunload = null;
       location.href = "/admin?" + new URLSearchParams(Object.assign({folder: parts[0], published: "1"}, parts.length > 1 ? {path: parts.slice(1).join("/")} : {}));
     } catch (error) {
@@ -1207,6 +1216,8 @@ const uploadMultiScript = `(() => {
       }
       render();
     }
+    const touched = [...new Set(courses.filter(course => course.state === "done").map(course => course.path[0]))];
+    if (touched.length) { note("מעדכנים את הקטלוג…"); await fetch("/admin/catalogue-refresh", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({folders: touched})}).catch(() => {}); }
     running = false; window.onbeforeunload = null;
     top.disable(false); for (const course of courses) if (course.state !== "done") course.picker.disable(false);
     const failed = courses.filter(course => course.state === "failed").length;
@@ -1478,9 +1489,7 @@ async function setCourseVisibility(request, env) {
       !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(course) ||
       (action !== "hide" && action !== "restore")) return json("נתוני השיעור אינם תקינים", 400);
   try {
-    const storage = await backblaze(env);
-    const {courses} = await planImport(folder, storage);
-    if (!courses.some(item => item.code === course)) return json("השיעור לא נמצא", 404);
+    if (!await findCourse(env, folder, course)) return json("השיעור לא נמצא", 404);
     const sql = action === "hide"
       ? "INSERT INTO backblaze_hidden_courses (folder, course_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
       : "DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?";
@@ -1502,12 +1511,16 @@ async function deleteCourse(request, env) {
   const back = '<p><a class="button" href="' + esc(adminHref({folder})) + '">חזרה לקטגוריה</a></p>';
   if (!uploadReady(env)) return layout("לא ניתן למחוק", notice("מחיקה מהאתר דורשת הרשאת כתיבה ל־Backblaze.", "error") + back, 503, {admin: true});
   try {
-    const {courses} = await planImport(folder, await backblaze(env));
-    const found = courses.find(item => item.code === course);
+    const found = await findCourse(env, folder, course);
     if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
     const writer = await backblaze(env, true);
     for (const file of [found.video, found.audio]) if (file) await writer.deleteFile(file.key, file.etag);
-    await env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course).run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course),
+      env.DB.prepare("DELETE FROM catalogue WHERE folder = ? AND code = ?").bind(folder, course)
+    ]);
+    planCache.delete(folder);
+    background(refreshFolder(env, folder));
     return redirect(adminHref({folder, deleted: 1}));
   } catch (error) {
     const hint = /^delete-file-40[13]$/.test(error.message) ? " למפתח הכתיבה אין הרשאת מחיקה ב־Backblaze." : "";
@@ -1553,23 +1566,27 @@ async function backblazeAdmin(env, url) {
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
     (url.searchParams.has("saved") ? notice("הגדרות הגישה נשמרו.") : "") +
+    (url.searchParams.has("refreshed") ? notice("הקטלוג עודכן.") : "") +
     ({hide: notice("השיעור הוסתר מהספרייה."), restore: notice("השיעור הוחזר לספרייה.")}[url.searchParams.get("visibility")] ?? "");
   try {
     const storage = await backblaze(env);
     const rules = await accessRules(env);
     const known = [...new Set([...await backblazeFolders(storage), ...rules.keys()])].sort((a, b) => a.localeCompare(b, "he"));
     if (!known.includes(current)) {
+      const allUpdated = Number((await env.DB.prepare("SELECT v FROM catalogue_state WHERE k = 'all_updated'").first())?.v ?? 0);
+      const refreshBox = `<form method="post" action="/admin/catalogue-refresh" class="panel refresh-box"><span>הקטלוג ${allUpdated ? "עודכן " + agoText(allUpdated) : "טרם עודכן"}. אחרי העלאה ב־rclone, לחצו כדי שהשיעורים החדשים יופיעו מיד באתר.</span><button class="button gold small">↻ עדכון הקטלוג</button></form>`;
       const cards = known.map(folder => {
         const [label, tone] = accessStatus(rules.get(folder));
         return `<li><a class="folder-card" href="${esc(adminHref({folder}))}">${folderIcon}<span class="folder-name">${esc(folder)}</span><span class="badge ${tone}">${label}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`;
       }).join("");
       return layout("ניהול הספרייה", flash + actions +
         `<div class="stats"><div class="stat"><b>${known.length}</b><span>קטגוריות</span></div><div class="stat"><b>${uploadReady(env) ? "פעילה" : "כבויה"}</b><span>העלאה מהאתר</span></div></div>
-        <h2>הקטגוריות</h2>${cards ? `<ul class="folder-grid">${cards}</ul>` : '<div class="panel empty-state"><p>עדיין אין קטגוריות. הוסיפו קטגוריה חדשה למטה.</p></div>'}` + addCategoryPanel + howTo, 200, {admin: true});
+        ${refreshBox}<h2>הקטגוריות</h2>${cards ? `<ul class="folder-grid">${cards}</ul>` : '<div class="panel empty-state"><p>עדיין אין קטגוריות. הוסיפו קטגוריה חדשה למטה.</p></div>'}` + addCategoryPanel + howTo, 200, {admin: true});
     }
     const q = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
     const only = ["mp3", "mp4"].includes(url.searchParams.get("only")) ? url.searchParams.get("only") : "";
-    const {courses, notes} = await planImport(current, storage);
+    const {courses, notes} = await getPlan(env, current);
+    const refreshedAt = (await env.DB.prepare("SELECT updated FROM catalogue_meta WHERE folder = ?").bind(current).first())?.updated;
     const {results: hiddenRows} = await env.DB.prepare("SELECT course_id FROM backblaze_hidden_courses WHERE folder = ?").bind(current).all();
     const hiddenIds = new Set(hiddenRows.map(row => row.course_id));
     const path = parsePath(url.searchParams.get("path"));
@@ -1591,6 +1608,7 @@ async function backblazeAdmin(env, url) {
     const unset = rules.has(current) ? "" : notice("הקטגוריה הזו מוסתרת מהאתר. בחרו ״ציבורית״ או ״מוגנת בקוד״ ולחצו ״שמירה״ כדי שהשיעורים יופיעו.", "error");
     return layout(path.length ? path[path.length - 1] : current, flash + unset + actions.replace('/admin?add=1', esc(adminHref({add: 1, folder: current, path: path.join("/")}))).replace('/admin?add=multi', esc(adminHref({add: "multi", folder: current, path: path.join("/")}))) + (path.length ? "" : accessPanel(current, rules.get(current))) + `
       <div class="stats"><div class="stat"><b>${all.length}</b><span>שיעורים מפורסמים</span></div><div class="stat"><b>${mp3Only}</b><span>MP3 בלבד</span></div><div class="stat"><b>${mp4Only}</b><span>MP4 בלבד</span></div><div class="stat"><b>${hidden.length}</b><span>מוסתרים</span></div></div>
+      <form method="post" action="/admin/catalogue-refresh" class="refresh-line"><input type="hidden" name="folder" value="${esc(current)}"><span>הקטלוג ${refreshedAt ? "עודכן " + agoText(refreshedAt) : "טרם עודכן"}</span><button class="button small">↻ עדכון</button></form>
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${path.length ? `<input type="hidden" name="path" value="${esc(path.join("/"))}">` : ""}${only ? `<input type="hidden" name="only" value="${only}">` : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !only)}${chip(`MP3 בלבד (${mp3Only})`, {q, only: "mp3"}, only === "mp3")}${chip(`MP4 בלבד (${mp4Only})`, {q, only: "mp4"}, only === "mp4")}</div>
       ${browsing && level.subs.length ? `<h2 style="margin-block-start:8px">תיקיות</h2><ul class="folder-grid" style="margin-block-end:22px">${level.subs.map(([name, count]) => `<li><a class="folder-card" href="${esc(adminHref({folder: current, path: [...path, name].join("/")}))}">${folderIcon}<span class="folder-name">${esc(name)}</span><span class="badge muted">${count}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`).join("")}</ul>` : ""}
@@ -1629,8 +1647,7 @@ async function countView(request, env, url) {
   if (!folder || folder.includes("/") || folder.length > 1024 || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(course)) return json("נתונים לא תקינים", 400);
   const rules = await accessRules(env);
   if (!await categoryOpen(request, url.origin, rules.get(folder), folder)) return json("אין גישה", 403);
-  const {courses} = await cachedPlan(folder, await cachedReader(env));
-  if (!courses.some(item => item.code === course)) return json("השיעור לא נמצא", 404);
+  if (!await findCourse(env, folder, course)) return json("השיעור לא נמצא", 404);
   const row = await env.DB.prepare("INSERT INTO course_views (folder, course_id, views) VALUES (?, ?, 1) ON CONFLICT(folder, course_id) DO UPDATE SET views = views + 1 RETURNING views").bind(folder, course).first();
   return Response.json({views: row?.views ?? 1}, {headers: {...security, "Cache-Control": "no-store"}});
 }
@@ -1670,23 +1687,148 @@ const videoScript = `(() => {
 })();
 `;
 
+// ---------- Catalogue cache (copy of the course list stored in D1) ----------
+const REFRESH_MS = 60 * 60 * 1000;
 const readerCache = {client: null, at: 0};
 const planCache = new Map();
-const clearCaches = () => { readerCache.client = null; planCache.clear(); };
+const folderCache = {at: 0, list: []};
+let currentCtx = null;
+const clearCaches = () => { readerCache.client = null; planCache.clear(); folderCache.at = 0; };
+const background = promise => { try { currentCtx?.waitUntil(promise.catch(() => {})); } catch {} };
+const byKey = (a, b) => (a.audio ?? a.video).key.localeCompare((b.audio ?? b.video).key);
+const agoText = ms => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "הרגע" : m < 60 ? `לפני ${m} דקות` : m < 1440 ? `לפני ${Math.round(m / 60)} שעות` : `לפני ${Math.round(m / 1440)} ימים`; };
+
 async function cachedReader(env) {
   if (!readerCache.client || Date.now() - readerCache.at > 10 * 60 * 1000) { readerCache.client = await backblaze(env); readerCache.at = Date.now(); }
   return readerCache.client;
 }
-async function cachedPlan(folder, storage) {
-  const hit = planCache.get(folder);
-  if (hit && Date.now() - hit.at < 60 * 1000) return hit.value;
-  const value = await planImport(folder, storage);
+
+const rowToCourse = row => ({
+  code: row.code, title: row.title, solo: Boolean(row.solo), folder: row.dir, trail: JSON.parse(row.trail),
+  audio: row.audio_key ? {key: row.audio_key, etag: row.audio_id} : undefined,
+  video: row.video_key ? {key: row.video_key, etag: row.video_id} : undefined
+});
+const COURSE_COLUMNS = "code, title, trail, solo, dir, audio_key, audio_id, video_key, video_id";
+
+async function rebuildCatalogue(env, folder, storage) {
+  const {courses, notes} = await planImport(folder, storage);
+  const rows = courses.map(course => [course.code, course.title, JSON.stringify(course.trail ?? []), course.solo ? 1 : 0, course.folder, course.audio?.key ?? null, course.audio?.etag ?? null, course.video?.key ?? null, course.video?.etag ?? null]);
+  const sig = await hash(JSON.stringify(rows) + JSON.stringify(notes.slice(0, 200)));
+  const current = await env.DB.prepare("SELECT sig FROM catalogue_meta WHERE folder = ?").bind(folder).first();
+  const value = {courses, notes};
+  if (current?.sig === sig) {
+    await env.DB.prepare("UPDATE catalogue_meta SET updated = ? WHERE folder = ?").bind(Date.now(), folder).run();
+    planCache.set(folder, {at: Date.now(), value});
+    return value;
+  }
+  const gen = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+  const group = "(?,?,?,?,?,?,?,?,?,?,?)";
+  const statements = [];
+  for (let start = 0; start < rows.length; start += 9) {
+    const part = rows.slice(start, start + 9);
+    statements.push(env.DB.prepare(`INSERT INTO catalogue (folder, gen, ${COURSE_COLUMNS}) VALUES ${part.map(() => group).join(",")}`).bind(...part.flatMap(row => [folder, gen, ...row])));
+  }
+  for (let start = 0; start < statements.length; start += 80) await env.DB.batch(statements.slice(start, start + 80));
+  await env.DB.prepare("INSERT INTO catalogue_meta (folder, gen, updated, count, notes, sig) VALUES (?,?,?,?,?,?) ON CONFLICT(folder) DO UPDATE SET gen = excluded.gen, updated = excluded.updated, count = excluded.count, notes = excluded.notes, sig = excluded.sig")
+    .bind(folder, gen, Date.now(), courses.length, JSON.stringify(notes.slice(0, 200)), sig).run();
+  await env.DB.prepare("DELETE FROM catalogue WHERE folder = ? AND gen <> ?").bind(folder, gen).run();
   planCache.set(folder, {at: Date.now(), value});
   return value;
 }
 
+const refreshingFolders = new Map();
+function refreshFolder(env, folder) {
+  if (refreshingFolders.has(folder)) return refreshingFolders.get(folder);
+  const task = (async () => { try { return await rebuildCatalogue(env, folder, await backblaze(env)); } finally { refreshingFolders.delete(folder); } })();
+  refreshingFolders.set(folder, task);
+  return task;
+}
+
+let refreshingAll = null;
+function refreshAll(env) {
+  if (refreshingAll) return refreshingAll;
+  refreshingAll = (async () => {
+    try {
+      const storage = await backblaze(env);
+      const folders = await backblazeFolders(storage);
+      for (const folder of folders) await rebuildCatalogue(env, folder, storage);
+      const {results} = await env.DB.prepare("SELECT folder FROM catalogue_meta").all();
+      for (const row of results) if (!folders.includes(row.folder)) {
+        await env.DB.batch([env.DB.prepare("DELETE FROM catalogue WHERE folder = ?").bind(row.folder), env.DB.prepare("DELETE FROM catalogue_meta WHERE folder = ?").bind(row.folder)]);
+      }
+      await env.DB.prepare("INSERT INTO catalogue_state (k, v) VALUES ('all_updated', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(String(Date.now())).run();
+      planCache.clear(); folderCache.at = 0;
+      return folders;
+    } finally { refreshingAll = null; }
+  })();
+  return refreshingAll;
+}
+
+async function loadCatalogue(env, folder) {
+  const meta = await env.DB.prepare("SELECT gen, updated, notes FROM catalogue_meta WHERE folder = ?").bind(folder).first();
+  if (!meta) return null;
+  const {results} = await env.DB.prepare(`SELECT ${COURSE_COLUMNS} FROM catalogue WHERE folder = ? AND gen = ?`).bind(folder, meta.gen).all();
+  return {courses: results.map(rowToCourse).sort(byKey), notes: JSON.parse(meta.notes), updated: meta.updated};
+}
+
+async function getPlan(env, folder) {
+  const hit = planCache.get(folder);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit.value;
+  const stored = await loadCatalogue(env, folder);
+  if (stored) {
+    const value = {courses: stored.courses, notes: stored.notes};
+    planCache.set(folder, {at: Date.now(), value});
+    if (Date.now() - stored.updated > REFRESH_MS) background(refreshFolder(env, folder));
+    return value;
+  }
+  return refreshFolder(env, folder);
+}
+
+async function findCourse(env, folder, code) {
+  const row = await env.DB.prepare(`SELECT ${COURSE_COLUMNS.replace(/(\w+)/g, "c.$1")} FROM catalogue c JOIN catalogue_meta m ON m.folder = c.folder AND m.gen = c.gen WHERE c.folder = ? AND c.code = ?`).bind(folder, code).first();
+  if (row) return rowToCourse(row);
+  const meta = await env.DB.prepare("SELECT updated FROM catalogue_meta WHERE folder = ?").bind(folder).first();
+  if (!meta) return (await getPlan(env, folder)).courses.find(item => item.code === code) ?? null;
+  if (Date.now() - meta.updated > 5 * 60 * 1000) background(refreshFolder(env, folder));
+  return null;
+}
+
+async function knownFolders(env) {
+  if (Date.now() - folderCache.at < 60 * 1000) return folderCache.list;
+  let {results} = await env.DB.prepare("SELECT folder FROM catalogue_meta ORDER BY folder").all();
+  if (!results.length) { await refreshAll(env); ({results} = await env.DB.prepare("SELECT folder FROM catalogue_meta ORDER BY folder").all()); }
+  else {
+    const state = await env.DB.prepare("SELECT v FROM catalogue_state WHERE k = 'all_updated'").first();
+    if (!state || Date.now() - Number(state.v) > REFRESH_MS) background(refreshAll(env));
+  }
+  folderCache.list = results.map(row => row.folder).sort((a, b) => a.localeCompare(b, "he"));
+  folderCache.at = Date.now();
+  return folderCache.list;
+}
+
+async function refreshCatalogue(request, env) {
+  const json_ = (request.headers.get("Content-Type") ?? "").includes("application/json");
+  let folders = [];
+  if (json_) {
+    const body = await request.json().catch(() => null);
+    folders = Array.isArray(body?.folders) ? body.folders.map(String).filter(name => name && !name.includes("/") && name.length <= 1024).slice(0, 20) : [];
+  } else {
+    const form = await request.formData().catch(() => null);
+    const one = String(form?.get("folder") ?? "");
+    if (one && !one.includes("/") && one.length <= 1024) folders = [one];
+  }
+  try {
+    if (folders.length) { const storage = await backblaze(env); for (const folder of folders) await rebuildCatalogue(env, folder, storage); folderCache.at = 0; }
+    else await refreshAll(env);
+  } catch (error) {
+    if (json_) return json("לא ניתן לעדכן את הקטלוג", 502);
+    return layout("לא ניתן לעדכן את הקטלוג", notice("העדכון נכשל. נסו שוב בעוד רגע.", "error") + '<p><a class="button" href="/admin">חזרה לניהול</a></p>', 502, {admin: true});
+  }
+  if (json_) return Response.json({ok: true}, {headers: security});
+  return redirect(adminHref({...(folders.length === 1 ? {folder: folders[0]} : {}), refreshed: 1}));
+}
+
 async function b2Catalogue(request, env, url) {
-  const storage = await cachedReader(env);
   const rules = await accessRules(env);
   const open = folder => categoryOpen(request, url.origin, rules.get(folder), folder);
   const category = url.searchParams.get("folder") ?? "";
@@ -1698,10 +1840,10 @@ async function b2Catalogue(request, env, url) {
   if (courseId && category) {
     const hidden = await env.DB.prepare("SELECT 1 FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(category, courseId).first();
     if (hidden) return medium ? json("הקובץ לא נמצא", 404) : layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
-    const {courses} = await cachedPlan(category, storage);
-    const course = courses.find(item => item.code === courseId);
+    const course = await findCourse(env, category, courseId);
     if (!course) return layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
     if (medium) {
+      const storage = await cachedReader(env);
       const file = medium === "video" ? course.video : medium === "audio" ? course.audio : null;
       const ext = medium === "video" ? ".mp4" : ".mp3";
       const name = url.searchParams.has("download") ? course.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, " ").trim().slice(0, 150) + ext : "";
@@ -1729,7 +1871,7 @@ async function b2Catalogue(request, env, url) {
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const path = parsePath(url.searchParams.get("path"));
-  const folders = (await backblazeFolders(storage)).filter(folder => rules.has(folder));
+  const folders = (await knownFolders(env)).filter(folder => rules.has(folder));
   const searchForm = (withSelect) => `<form method="get" role="search" class="searchbar${withSelect ? " with-select" : ""}"><label>חיפוש שיעור<input type="search" name="q" maxlength="120" placeholder="שם השיעור" value="${esc(query)}"></label>${withSelect
     ? `<label>קטגוריה<select name="folder"><option value="">כל הקטגוריות</option>${folders.map(folder => `<option value="${esc(folder)}"${folder === category ? " selected" : ""}>${esc(folder)}</option>`).join("")}</select></label>`
     : ""}${category && path.length ? `<input type="hidden" name="path" value="${esc(path.join("/"))}">` : ""}<button class="button gold">חיפוש</button></form>`;
@@ -1756,7 +1898,7 @@ async function b2Catalogue(request, env, url) {
   let subCards = "";
   for (const folder of category ? [category] : folders) {
     if (!category && !await open(folder)) continue;
-    const found = (await cachedPlan(folder, storage)).courses.filter(course => !hidden.has(JSON.stringify([folder, course.code])));
+    const found = (await getPlan(env, folder)).courses.filter(course => !hidden.has(JSON.stringify([folder, course.code])));
     if (browsing) {
       const {inside, subs} = levelView(found, path);
       if (path.length && !inside.length && !subs.length) return layout("התיקייה לא נמצאה", '<a href="/">חזרה לספרייה</a>', 404);
@@ -1791,7 +1933,8 @@ async function b2Catalogue(request, env, url) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    currentCtx = ctx;
     gateKey = String(env.OR_TORAH_GATE_KEY ?? "");
     if (gateKey.length < 16) return new Response("Site not configured", {status: 503, headers: security});
     const url = new URL(request.url);
