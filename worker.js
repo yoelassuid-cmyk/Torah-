@@ -138,7 +138,22 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .has-audio-bar main { padding-block-end: 190px; }
 .resume { margin-block: 0 12px; }
 .video-wrap { position: relative; }
-.video-logo { position: absolute; top: 10px; right: 10px; width: clamp(130px, 24%, 230px); height: auto; opacity: .96; pointer-events: none; }
+.video-logo { position: absolute; top: 10px; right: 10px; width: clamp(180px, 34%, 340px); height: auto; opacity: .97; pointer-events: none; z-index: 2; }
+.video-wrap { background: #000; border-radius: 10px; overflow: hidden; }
+.video-wrap video::-webkit-media-controls-fullscreen-button { display: none; }
+.vfs-btn { position: absolute; top: 10px; left: 10px; z-index: 3; width: 42px; height: 42px; border-radius: 10px; border: 1px solid #ffffff44; background: #000a; color: #fff; font-size: 1.25rem; cursor: pointer; }
+.video-wrap.is-fs { position: fixed; inset: 0; z-index: 1000; width: 100%; height: 100%; border-radius: 0; display: flex; align-items: center; justify-content: center; }
+.video-wrap.is-fs video { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; }
+.video-wrap.is-fs .video-logo { width: clamp(240px, 29vw, 640px); top: max(16px, env(safe-area-inset-top)); right: max(16px, env(safe-area-inset-right)); }
+.video-wrap.is-fs .vfs-btn { top: max(16px, env(safe-area-inset-top)); left: max(16px, env(safe-area-inset-left)); }
+.video-wrap:fullscreen { width: 100%; height: 100%; border-radius: 0; display: flex; align-items: center; justify-content: center; }
+.video-wrap:fullscreen video { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; }
+.video-wrap:fullscreen .video-logo { width: clamp(240px, 29vw, 640px); top: 16px; right: 16px; }
+.video-wrap:fullscreen .vfs-btn { top: 16px; left: 16px; }
+.video-wrap:-webkit-full-screen { width: 100%; height: 100%; border-radius: 0; }
+.video-wrap:-webkit-full-screen video { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; }
+.video-wrap:-webkit-full-screen .video-logo { width: clamp(240px, 29vw, 640px); top: 16px; right: 16px; }
+body.fs-lock { overflow: hidden; }
 .cover-art { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); margin-block-end: 14px; }
 .brand-preview { max-width: 100%; border-radius: 12px; border: 1px solid var(--line); background: repeating-conic-gradient(#2a3a50 0 25%, #1c2a3c 0 50%) 0 0 / 20px 20px; }
 .brand-preview.cover { width: 160px; height: 160px; object-fit: cover; }
@@ -1620,6 +1635,37 @@ async function countView(request, env, url) {
   return Response.json({views: row?.views ?? 1}, {headers: {...security, "Cache-Control": "no-store"}});
 }
 
+const videoScript = `(() => {
+  const wrap = document.querySelector(".video-wrap");
+  const video = wrap && wrap.querySelector("video");
+  if (!video) return;
+  video.setAttribute("controlsList", "nofullscreen");
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "vfs-btn"; button.setAttribute("aria-label", "מסך מלא"); button.textContent = "⛶";
+  wrap.append(button);
+  let pseudo = false;
+  const real = () => document.fullscreenElement === wrap || document.webkitFullscreenElement === wrap;
+  const refresh = () => { const on = real() || pseudo; button.textContent = on ? "✕" : "⛶"; button.setAttribute("aria-label", on ? "יציאה ממסך מלא" : "מסך מלא"); };
+  const enter = async () => {
+    const request = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+    if (request) {
+      try { await request.call(wrap); try { await screen.orientation.lock("landscape"); } catch (error) {} refresh(); return; } catch (error) {}
+    }
+    pseudo = true; wrap.classList.add("is-fs"); document.body.classList.add("fs-lock"); refresh();
+  };
+  const leave = () => {
+    if (real()) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (error) {} }
+    if (pseudo) { pseudo = false; wrap.classList.remove("is-fs"); document.body.classList.remove("fs-lock"); }
+    try { screen.orientation.unlock(); } catch (error) {}
+    refresh();
+  };
+  button.addEventListener("click", () => (real() || pseudo) ? leave() : enter());
+  document.addEventListener("fullscreenchange", refresh);
+  document.addEventListener("webkitfullscreenchange", refresh);
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && pseudo) leave(); });
+})();
+`;
+
 const readerCache = {client: null, at: 0};
 const planCache = new Map();
 const clearCaches = () => { readerCache.client = null; planCache.clear(); };
@@ -1675,7 +1721,7 @@ async function b2Catalogue(request, env, url) {
           ${assets.has("cover") ? '<img class="cover-art" src="/brand/cover.jpg" alt="">' : ""}
           <audio controls preload="metadata" src="${link("audio")}"></audio>
           <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>` : ""}
-      </div>`, 200, {before: crumbs, script: course.audio ? ["/views.js", "/player.js"] : "/views.js"});
+      </div>`, 200, {before: crumbs, script: ["/views.js", ...(course.audio ? ["/player.js"] : []), ...(course.video ? ["/video.js"] : [])]});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const path = parsePath(url.searchParams.get("path"));
@@ -1750,6 +1796,7 @@ export default {
     if (path === "/upload-multi.js") return new Response(uploadMultiScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/picker.js") return new Response(pickerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/upload.js") return new Response(uploadScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
+    if (path === "/video.js") return new Response(videoScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/views.js") return new Response(viewsScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/branding.js") return new Response(brandingScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/player.js") return new Response(playerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
