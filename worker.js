@@ -117,7 +117,8 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .pagination { display: flex; flex-wrap: wrap; gap: 12px; margin-block-start: 22px; }
 
 /* course page */
-.course-head { margin-block-end: 22px; }
+.course-head { margin-block-end: 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.views { color: var(--muted); font-size: .92rem; margin-inline-start: 6px; }
 .course-head .badge { margin-inline-end: 6px; }
 .player-grid { display: grid; gap: 18px; max-width: 880px; }
 .player-card { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
@@ -254,6 +255,7 @@ async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_access (folder TEXT PRIMARY KEY, mode TEXT NOT NULL, code_hash TEXT)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS course_views (folder TEXT NOT NULL, course_id TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (folder, course_id))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS site_assets (name TEXT PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_attempts (k TEXT PRIMARY KEY, period INTEGER NOT NULL, tries INTEGER NOT NULL)")
   ]);
@@ -1585,6 +1587,39 @@ async function backblazeAdmin(env, url) {
   }
 }
 
+const viewsScript = `(() => {
+  const head = document.querySelector(".course-head[data-course]");
+  if (!head) return;
+  const key = "ot-seen:" + head.dataset.folder + "|" + head.dataset.course;
+  let last = 0;
+  try { last = Number(localStorage.getItem(key)) || 0; } catch (error) {}
+  if (Date.now() - last < 12 * 3600 * 1000) return;
+  fetch("/api/view", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({folder: head.dataset.folder, course: head.dataset.course})})
+    .then(response => response.ok ? response.json() : null)
+    .then(data => {
+      if (!data) return;
+      try { localStorage.setItem(key, String(Date.now())); } catch (error) {}
+      const label = head.querySelector("[data-views]");
+      if (label) label.textContent = "👁 " + data.views + " צפיות";
+    }).catch(() => {});
+})();
+`;
+
+async function countView(request, env, url) {
+  if (request.headers.get("Origin") !== url.origin) return json("בקשה לא חוקית", 403);
+  if (Number(request.headers.get("Content-Length")) > 2048) return json("בקשה גדולה מדי", 413);
+  const body = await request.json().catch(() => null);
+  const folder = String(body?.folder ?? "");
+  const course = String(body?.course ?? "");
+  if (!folder || folder.includes("/") || folder.length > 1024 || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(course)) return json("נתונים לא תקינים", 400);
+  const rules = await accessRules(env);
+  if (!await categoryOpen(request, url.origin, rules.get(folder), folder)) return json("אין גישה", 403);
+  const {courses} = await cachedPlan(folder, await cachedReader(env));
+  if (!courses.some(item => item.code === course)) return json("השיעור לא נמצא", 404);
+  const row = await env.DB.prepare("INSERT INTO course_views (folder, course_id, views) VALUES (?, ?, 1) ON CONFLICT(folder, course_id) DO UPDATE SET views = views + 1 RETURNING views").bind(folder, course).first();
+  return Response.json({views: row?.views ?? 1}, {headers: {...security, "Cache-Control": "no-store"}});
+}
+
 const readerCache = {client: null, at: 0};
 const planCache = new Map();
 const clearCaches = () => { readerCache.client = null; planCache.clear(); };
@@ -1630,7 +1665,8 @@ async function b2Catalogue(request, env, url) {
     const link = (kind, extra = "") => esc(backblazeCourseLink(category, courseId, kind) + extra);
     const trail = courseTrail(course);
     const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה">${["<a href=\"/\">הספרייה</a>", `<a href="${esc(navLink(category))}">${esc(category)}</a>`, ...trail.map((part, index) => `<a href="${esc(navLink(category, trail.slice(0, index + 1)))}">${esc(part)}</a>`)].join('<span aria-hidden="true">‹</span>')}</nav>`;
-    return layout(course.title, `<div class="course-head"${assets.has("cover") ? " data-cover" : ""}>${badges(course.audio, course.video)}</div>
+    const seen = await env.DB.prepare("SELECT views FROM course_views WHERE folder = ? AND course_id = ?").bind(category, courseId).first();
+    return layout(course.title, `<div class="course-head"${assets.has("cover") ? " data-cover" : ""} data-folder="${esc(category)}" data-course="${esc(courseId)}">${badges(course.audio, course.video)}<span class="views" data-views>👁 ${seen?.views ?? 0} צפיות</span></div>
       <div class="player-grid">
         ${course.video ? `<section class="player-card"><h2>צפייה בשיעור · MP4</h2>
           <div class="video-wrap"><video controls playsinline preload="metadata" src="${link("video")}"></video>${assets.has("logo") ? '<img class="video-logo" src="/brand/logo.png" alt="" aria-hidden="true">' : ""}</div>
@@ -1639,7 +1675,7 @@ async function b2Catalogue(request, env, url) {
           ${assets.has("cover") ? '<img class="cover-art" src="/brand/cover.jpg" alt="">' : ""}
           <audio controls preload="metadata" src="${link("audio")}"></audio>
           <div class="player-actions"><a class="button" href="${link("audio", "&download=1")}">הורדת MP3</a></div></section>` : ""}
-      </div>`, 200, course.audio ? {before: crumbs, script: "/player.js"} : {before: crumbs});
+      </div>`, 200, {before: crumbs, script: course.audio ? ["/views.js", "/player.js"] : "/views.js"});
   }
   const query = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
   const path = parsePath(url.searchParams.get("path"));
@@ -1663,7 +1699,8 @@ async function b2Catalogue(request, env, url) {
     : env.DB.prepare("SELECT folder, course_id FROM backblaze_hidden_courses");
   const {results: hiddenRows} = await hiddenQuery.all();
   const hidden = new Set(hiddenRows.map(row => JSON.stringify([row.folder, row.course_id])));
-  const lessonRow = (folder, course, where) => `<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, course.code))}"><span class="lesson-main"><span class="lesson-title">${esc(course.title)}</span>${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}</span><span class="lesson-badges">${badges(course.audio, course.video)}</span></a></li>`;
+  const viewMap = new Map((await env.DB.prepare("SELECT folder, course_id, views FROM course_views").all()).results.map(row => [row.folder + "|" + row.course_id, row.views]));
+  const lessonRow = (folder, course, where) => `<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, course.code))}"><span class="lesson-main"><span class="lesson-title">${esc(course.title)}</span>${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}</span><span class="lesson-badges">${badges(course.audio, course.video)}${viewMap.get(folder + "|" + course.code) ? `<span class="badge muted">👁 ${viewMap.get(folder + "|" + course.code)}</span>` : ""}</span></a></li>`;
   const browsing = Boolean(category) && !query;
   let rows = [];
   let subCards = "";
@@ -1713,6 +1750,7 @@ export default {
     if (path === "/upload-multi.js") return new Response(uploadMultiScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/picker.js") return new Response(pickerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/upload.js") return new Response(uploadScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
+    if (path === "/views.js") return new Response(viewsScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/branding.js") return new Response(brandingScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     if (path === "/player.js") return new Response(playerScript, {headers: {"Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"}});
     await ensureSchema(env);
@@ -1722,6 +1760,7 @@ export default {
       response.headers.set("X-Robots-Tag", "noindex, nofollow");
       return response;
     }
+    if (path === "/api/view" && request.method === "POST") { await ensureSchema(env); return countView(request, env, url); }
     if (path === "/access/category" && request.method === "POST") return enterCategory(request, env, url);
     if (path !== "/") return layout("העמוד לא נמצא",'<a href="/">חזרה לספרייה</a>',404);
     if (!["GET", "HEAD"].includes(request.method)) return new Response(null, {status: 405, headers: {Allow: "GET, HEAD"}});
