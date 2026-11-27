@@ -841,7 +841,7 @@ async function courseUploadForm(env, current, error = "", status = 200, check = 
     <form class="form-grid" action="/admin/backblaze-upload" method="post" enctype="multipart/form-data" data-direct-upload>
       <fieldset ${enabled ? "" : "disabled"} class="form-grid" style="border:0;padding:0;margin:0;min-width:0">
         <input type="hidden" name="upload_id" value="${crypto.randomUUID()}">
-        <label>כותרת השיעור<input name="title" maxlength="180" required></label>
+        <label>כותרת השיעור (אפשר להשאיר ריק: הכותרת תילקח משם הקובץ)<input name="title" maxlength="180" placeholder="אופציונלי"></label>
         <div><p style="margin:0 0 6px;font-weight:600;color:var(--text)">יעד: קטגוריה ותיקיית משנה</p>
           <div data-picker data-categories="${esc(JSON.stringify(known))}" data-initial="${esc(JSON.stringify(initial))}"></div>
           <noscript><label>קטגוריה<select name="folder"><option value="">בחירת קטגוריה</option>${options}</select></label></noscript></div>
@@ -886,15 +886,16 @@ const uploadScript = `(() => {
     const data = new FormData(form);
     const audio = data.get("audio");
     const video = data.get("video");
-    const title = String(data.get("title") || "").trim();
+    let title = String(data.get("title") || "").trim();
     const newCategory = String(data.get("new_folder") || "").trim().replace(/[/\\\\]/g, " ");
     const parts = newCategory ? [newCategory] : picker ? picker.get() : [String(data.get("folder") || "").trim()].filter(Boolean);
     const folder = parts.join("/");
-    if (!title || !folder) return note("יש למלא כותרת ולבחור קטגוריה.", "error");
     const files = [];
     if (video && video.size) files.push({kind: "video", file: video});
     if (audio && audio.size) files.push({kind: "audio", file: audio});
     if (!files.length) return note("יש לבחור לפחות קובץ אחד: MP3 או MP4.", "error");
+    if (!title) title = (audio && audio.size ? audio : video).name.replace(/\\.(mp3|mp4)$/i, "").replace(/[/\\\\]/g, " ").trim().slice(0, 180);
+    if (!title || !folder) return note("יש לבחור קטגוריה (ואם אין שם קובץ, למלא כותרת).", "error");
     button.disabled = true;
     window.onbeforeunload = () => "ההעלאה בעיצומה";
     bar.hidden = false; bar.value = 0;
@@ -1427,10 +1428,12 @@ async function addBackblazeCourse(request, env) {
   if (!length || length > courseUploadLimit + 64 * 1024) return tooLarge();
   const form = await request.formData().catch(() => null);
   const folder = (String(form?.get("new_folder") ?? "").trim() || String(form?.get("folder") ?? "")).trim();
-  const title = String(form?.get("title") ?? "").trim();
   const id = String(form?.get("upload_id") ?? "");
   const audio = form?.get("audio");
   const video = form?.get("video");
+  const typed = String(form?.get("title") ?? "").trim();
+  const fromFile = String((audio?.size ? audio : video)?.name ?? "").replace(/\.(mp3|mp4)$/i, "").replace(/[/\\]/g, " ").trim().slice(0, 180);
+  const title = typed || fromFile;
   const validName = (value, max) => value && value !== "." && value !== ".." && value.length <= max && !/[/\\\x00-\x1f\x7f]/.test(value);
   if (!validName(folder, 120) || !validName(title, 180) || !/^[a-f0-9-]{36}$/.test(id) ||
       (!audio?.size && !video?.size) || (audio?.size && !/\.mp3$/i.test(audio.name)) || (video?.size && !/\.mp4$/i.test(video.name))) {
