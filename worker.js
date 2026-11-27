@@ -765,7 +765,13 @@ async function backblaze(env, writing = false) {
         const value = response.headers.get(name);
         if (value !== null) resultHeaders.set(name, value);
       }
-      return new Response(request.method === "HEAD" ? null : response.body, {status: response.status, headers: resultHeaders});
+      let status = response.status;
+      if (range && status === 200) {
+        // Backblaze answers 200 to "bytes=0-". Safari (iPhone) refuses to play unless it gets 206 + Content-Range.
+        const length = Number(response.headers.get("Content-Length"));
+        if (Number.isFinite(length) && length > 0) { status = 206; resultHeaders.set("Content-Range", `bytes 0-${length - 1}/${length}`); }
+      }
+      return new Response(request.method === "HEAD" ? null : response.body, {status, headers: resultHeaders});
     }
   };
 }
@@ -1576,8 +1582,23 @@ async function backblazeAdmin(env, url) {
   }
 }
 
+const readerCache = {client: null, at: 0};
+const planCache = new Map();
+const clearCaches = () => { readerCache.client = null; planCache.clear(); };
+async function cachedReader(env) {
+  if (!readerCache.client || Date.now() - readerCache.at > 10 * 60 * 1000) { readerCache.client = await backblaze(env); readerCache.at = Date.now(); }
+  return readerCache.client;
+}
+async function cachedPlan(folder, storage) {
+  const hit = planCache.get(folder);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit.value;
+  const value = await planImport(folder, storage);
+  planCache.set(folder, {at: Date.now(), value});
+  return value;
+}
+
 async function b2Catalogue(request, env, url) {
-  const storage = await backblaze(env);
+  const storage = await cachedReader(env);
   const rules = await accessRules(env);
   const open = folder => categoryOpen(request, url.origin, rules.get(folder), folder);
   const category = url.searchParams.get("folder") ?? "";
@@ -1589,7 +1610,7 @@ async function b2Catalogue(request, env, url) {
   if (courseId && category) {
     const hidden = await env.DB.prepare("SELECT 1 FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(category, courseId).first();
     if (hidden) return medium ? json("הקובץ לא נמצא", 404) : layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
-    const {courses} = await planImport(category, storage);
+    const {courses} = await cachedPlan(category, storage);
     const course = courses.find(item => item.code === courseId);
     if (!course) return layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
     if (medium) {
@@ -1645,7 +1666,7 @@ async function b2Catalogue(request, env, url) {
   let subCards = "";
   for (const folder of category ? [category] : folders) {
     if (!category && !await open(folder)) continue;
-    const found = (await planImport(folder, storage)).courses.filter(course => !hidden.has(JSON.stringify([folder, course.code])));
+    const found = (await cachedPlan(folder, storage)).courses.filter(course => !hidden.has(JSON.stringify([folder, course.code])));
     if (browsing) {
       const {inside, subs} = levelView(found, path);
       if (path.length && !inside.length && !subs.length) return layout("התיקייה לא נמצאה", '<a href="/">חזרה לספרייה</a>', 404);
@@ -1705,6 +1726,7 @@ export default {
     try {
       return await b2Catalogue(request, env, url);
     } catch (error) {
+      clearCaches();
       const issue = /^(?:(authorize|list|media)-(?:[0-9]{3}|network|format)|invalid-(?:key-id|application-key)-format)$/.test(error.message) ? error.message : "upstream-error";
       const response = layout("הספרייה אינה זמינה כרגע", '<a href="/">ניסיון נוסף</a>', 502);
       response.headers.set("X-Or-Torah-Storage", issue);
