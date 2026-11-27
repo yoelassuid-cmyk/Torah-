@@ -138,7 +138,7 @@ a.lesson-card:hover { border-color: var(--gold); background: var(--surface2); }
 .has-audio-bar main { padding-block-end: 190px; }
 .resume { margin-block: 0 12px; }
 .video-wrap { position: relative; }
-.video-logo { position: absolute; top: 12px; right: 12px; width: clamp(44px, 14%, 120px); height: auto; opacity: .92; pointer-events: none; }
+.video-logo { position: absolute; top: 10px; right: 10px; width: clamp(150px, 36%, 300px); height: auto; opacity: .95; pointer-events: none; }
 .cover-art { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); margin-block-end: 14px; }
 .brand-preview { max-width: 100%; border-radius: 12px; border: 1px solid var(--line); background: repeating-conic-gradient(#2a3a50 0 25%, #1c2a3c 0 50%) 0 0 / 20px 20px; }
 .brand-preview.cover { width: 160px; height: 160px; object-fit: cover; }
@@ -1342,7 +1342,7 @@ const brandingScript = `(() => {
       ctx.drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, 0, 0, 600, 600);
       return toBlobUrl(canvas, "image/jpeg", 0.88);
     }
-    for (const width of [400, 300, 200, 150]) {
+    for (const width of [640, 480, 360, 260, 180]) {
       canvas.width = Math.min(width, image.width);
       canvas.height = Math.round(image.height * (canvas.width / image.width));
       ctx.clearRect(0, 0, canvas.width, canvas.height);
