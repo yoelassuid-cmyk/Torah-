@@ -693,8 +693,8 @@ async function admin(request, env, url) {
   if (route === "/admin/catalogue-refresh" && request.method === "POST") return refreshCatalogue(request, env);
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
-  if (route === "/admin/course-move" && request.method === "POST") return moveCourse(request, env);
-  if (route === "/admin/course-rename" && request.method === "POST") return renameCourse(request, env);
+  if (route === "/admin/course-move" && request.method === "POST") { const job = moveCourse(request, env); background(job); return job; }
+  if (route === "/admin/course-rename" && request.method === "POST") { const job = renameCourse(request, env); background(job); return job; }
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
   return json("פעולה לא זמינה", 405);
 }
@@ -771,7 +771,12 @@ async function backblaze(env, writing = false) {
     },
     async exists(fileName) {
       const page = await this.list({prefix: fileName});
-      return page.objects.some(item => item.key === fileName && item.action !== "folder");
+      return page.objects.find(item => item.key === fileName && item.action !== "folder") ?? null;
+    },
+    async size(fileId) {
+      const response = await fetch(storageApi.apiUrl + "/b2api/v4/b2_get_file_info?" + new URLSearchParams({fileId}), {headers: {Authorization: authorizationToken}, redirect: "manual"});
+      if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error("info-" + response.status); }
+      return (await response.json()).contentLength;
     },
     async uploadTarget() {
       const {uploadUrl, authorizationToken: token} = await getUploadEndpoint();
@@ -800,7 +805,7 @@ async function backblaze(env, writing = false) {
       if (!response.ok) throw new Error("list-" + response.status);
       const {files, nextFileName} = await response.json();
       return {
-        objects: files.map(file => ({key: file.fileName, etag: file.fileId, action: file.action})),
+        objects: files.map(file => ({key: file.fileName, etag: file.fileId, action: file.action, size: file.contentLength})),
         cursor: nextFileName,
         truncated: Boolean(nextFileName)
       };
@@ -1595,6 +1600,23 @@ async function deleteCourse(request, env) {
   }
 }
 
+// Copy every planned file. A copy that already exists with the same size (from an interrupted attempt) is reused.
+// Returns the key of a different file that already occupies the target name, or null.
+async function copyAll(reader, writer, plan, created) {
+  const todo = [];
+  for (const item of plan) {
+    if (item.key === item.file.key) continue;
+    const hit = await reader.exists(item.key);
+    if (hit) {
+      if (hit.size !== await reader.size(item.file.etag)) return item.key;
+      continue;
+    }
+    todo.push(item);
+  }
+  await Promise.all(todo.map(async item => { created.push({key: item.key, fileId: await writer.copyFile(item.file.etag, item.key)}); }));
+  return null;
+}
+
 // Move a lesson to another category / sub-folder: copy every file inside Backblaze, check, then delete the originals.
 async function moveCourse(request, env) {
   if (Number(request.headers.get("Content-Length")) > 4096) return json("בקשה גדולה מדי", 413);
@@ -1626,12 +1648,8 @@ async function moveCourse(request, env) {
       return {file, key: targetDir + (camera ? segments[segments.length - 2] + "/" : "") + name};
     });
     if (plan.every(item => item.key === item.file.key)) return layout("אין מה להעביר", notice("השיעור כבר נמצא ביעד הזה.", "error") + back, 400, {admin: true});
-    for (const item of plan) if (item.key !== item.file.key && await reader.exists(item.key)) return layout("לא ניתן להעביר", notice("כבר קיים קובץ באותו שם ביעד: " + item.key, "error") + back, 409, {admin: true});
-    for (const item of plan) {
-      if (item.key === item.file.key) continue;
-      const fileId = await writer.copyFile(item.file.etag, item.key);
-      created.push({key: item.key, fileId});
-    }
+    const clash = await copyAll(reader, writer, plan, created);
+    if (clash) return layout("לא ניתן להעביר", notice("כבר קיים קובץ שונה באותו שם ביעד: " + clash, "error") + back, 409, {admin: true});
     for (const item of plan) if (item.key !== item.file.key) await writer.deleteFile(item.file.key, item.file.etag);
     await env.DB.batch([
       env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course),
@@ -1677,11 +1695,8 @@ async function renameCourse(request, env) {
       return {file, key: camera ? parent + title + "/" + name : parent + title + (found.solo ? " [נפרד]" : "") + extension};
     });
     if (plan.every(item => item.key === item.file.key)) return layout("אין מה לשנות", notice("השם זהה לשם הקיים.", "error") + back, 400, {admin: true});
-    for (const item of plan) if (item.key !== item.file.key && await reader.exists(item.key)) return layout("לא ניתן לשנות שם", notice("כבר קיים קובץ בשם הזה: " + item.key, "error") + back, 409, {admin: true});
-    for (const item of plan) {
-      if (item.key === item.file.key) continue;
-      created.push({key: item.key, fileId: await writer.copyFile(item.file.etag, item.key)});
-    }
+    const clash = await copyAll(reader, writer, plan, created);
+    if (clash) return layout("לא ניתן לשנות שם", notice("כבר קיים קובץ שונה בשם הזה: " + clash, "error") + back, 409, {admin: true});
     for (const item of plan) if (item.key !== item.file.key) await writer.deleteFile(item.file.key, item.file.etag);
     await env.DB.batch([
       env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course),
