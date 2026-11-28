@@ -602,6 +602,24 @@ async function planImport(folder, storage) {
       merged.add(v);
     }
   }
+  // Same lesson number: in one folder, a single leftover MP3 and a single leftover MP4 that start with the same number/letters
+  // (at least 2 characters, e.g. "נה") are the same lesson even when the rest of the titles differs.
+  const byNumber = new Map();
+  for (const course of courses) {
+    if (course.solo || merged.has(course) || Boolean(course.audio) === Boolean(course.video) || keptApart(course)) continue;
+    const first = titleTokens(course.title)[0];
+    if (!first || first.length < 2 || !isIndexToken(first)) continue;
+    const key = `${course.trail.join("/")}\u0000${first}`;
+    byNumber.set(key, [...(byNumber.get(key) ?? []), course]);
+  }
+  for (const list of byNumber.values()) {
+    const audios = list.filter(course => course.audio), videos = list.filter(course => course.video);
+    if (audios.length !== 1 || videos.length !== 1) continue;
+    if (audios[0].audio.number && videos[0].video.number && audios[0].audio.number !== videos[0].video.number) continue;
+    audios[0].video = videos[0].video;
+    audios[0].videos = videos[0].videos;
+    merged.add(videos[0]);
+  }
   // Second pass: same LAST folder name under a different path (e.g. הלכה/מועדים and הלכה/אורח חיים/מועדים).
   // Only identical/clearly matching titles, or the single leftover pair of that folder, are joined.
   const leafGroups = [];
