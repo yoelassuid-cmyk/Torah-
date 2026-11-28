@@ -761,8 +761,8 @@ async function backblaze(env, writing = false) {
           return fileId;
         }
         await response.body?.cancel().catch(() => {});
-        if ((response.status === 429 || response.status === 503) && attempt < 2) {
-          const wait = Math.min(5, Number(response.headers.get("Retry-After")) || 2 ** attempt);
+        if ((response.status === 429 || response.status === 503) && attempt < 4) {
+          const wait = Math.min(8, Number(response.headers.get("Retry-After")) || 2 ** attempt);
           await new Promise(resolve => setTimeout(resolve, wait * 1000));
           continue;
         }
