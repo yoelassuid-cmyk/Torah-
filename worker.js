@@ -273,13 +273,14 @@ async function ensureSchema(env) {
   if (schemaReady) return;
   await env.DB.batch([
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_access (folder TEXT PRIMARY KEY, mode TEXT NOT NULL, code_hash TEXT)"),
-    env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue (folder TEXT NOT NULL, gen TEXT NOT NULL, code TEXT NOT NULL, title TEXT NOT NULL, trail TEXT NOT NULL, solo INTEGER NOT NULL DEFAULT 0, dir TEXT NOT NULL, audio_key TEXT, audio_id TEXT, video_key TEXT, video_id TEXT, PRIMARY KEY (folder, gen, code))"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue (folder TEXT NOT NULL, gen TEXT NOT NULL, code TEXT NOT NULL, title TEXT NOT NULL, trail TEXT NOT NULL, solo INTEGER NOT NULL DEFAULT 0, dir TEXT NOT NULL, audio_key TEXT, audio_id TEXT, video_key TEXT, video_id TEXT, video_extra TEXT, PRIMARY KEY (folder, gen, code))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue_meta (folder TEXT PRIMARY KEY, gen TEXT NOT NULL, updated INTEGER NOT NULL, count INTEGER NOT NULL, notes TEXT NOT NULL DEFAULT '[]', sig TEXT NOT NULL DEFAULT '')"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS catalogue_state (k TEXT PRIMARY KEY, v TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS course_views (folder TEXT NOT NULL, course_id TEXT NOT NULL, views INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (folder, course_id))"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS site_assets (name TEXT PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)"),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS category_attempts (k TEXT PRIMARY KEY, period INTEGER NOT NULL, tries INTEGER NOT NULL)")
   ]);
+  try { await env.DB.prepare("ALTER TABLE catalogue ADD COLUMN video_extra TEXT").run(); } catch {}
   schemaReady = true;
 }
 
@@ -383,7 +384,7 @@ function layout(title, content, status = 200, opts = {}) {
 }
 
 const notice = (text, type = "ok") => `<p class="notice ${type}" role="${type === "error" ? "alert" : "status"}">${esc(text)}</p>`;
-const badges = (audio, video) => `${audio ? '<span class="badge">MP3</span>' : ""}${video ? '<span class="badge">MP4</span>' : ""}`;
+const badges = (audio, video, parts = 0) => `${audio ? '<span class="badge">MP3</span>' : ""}${video ? `<span class="badge">MP4${parts > 1 ? " ×" + parts : ""}</span>` : ""}`;
 
 function adminLogin(message = "", status = 200) {
   return layout("כניסה לניהול", `<div class="panel stack">${message ? notice(message, "error") : ""}<form class="form-grid" method="post" action="/admin/login"><label>קוד ניהול<input type="password" name="pin" inputmode="numeric" maxlength="4" autocomplete="current-password" dir="ltr" required></label><button class="button gold">כניסה</button></form></div>`, status, {bare: true});
@@ -509,14 +510,24 @@ async function planImport(folder, storage) {
       const match = /^(.*\/)([^/]+)\.(mp3|mp4)$/i.exec(key);
       if (!match) continue;
       const [, directory, stem, extension] = match;
-      const number = /(?:^|[\s_\-[\u2013\u2014])([0-9]{5,14})\]?$/.exec(stem);
-      const identity = `${directory}${number ? number[1] : stem.normalize("NFC").toLowerCase()}`;
+      // A camera-named video (00015.mp4) inside a lesson folder is a PART of that lesson: it takes the folder's name.
+      let dir = directory, name = stem, part = null;
+      if (extension.toLowerCase() === "mp4" && /^\d{3,6}$/.test(stem)) {
+        const segments = directory.split("/").filter(Boolean);
+        if (segments.length >= 2 && !isBatchId(segments[segments.length - 1])) {
+          part = Number(stem);
+          name = segments[segments.length - 1];
+          dir = segments.slice(0, -1).join("/") + "/";
+        }
+      }
+      const number = part === null ? /(?:^|[\s_\-[\u2013\u2014])([0-9]{5,14})\]?$/.exec(stem) : null;
+      const identity = `${dir}${number ? number[1] : name.normalize("NFC").toLowerCase()}`;
       const pair = groups.get(identity) ?? {number: number?.[1], mp3: [], mp4: []};
       const separate = /\s*\[(?:נפרד|solo)\]\s*/i;
-      const solo = separate.test(stem);
-      const shown = solo ? stem.replace(separate, " ").trim() : stem;
+      const solo = separate.test(name);
+      const shown = solo ? name.replace(separate, " ").trim() : name;
       const title = (number && !solo ? shown.slice(0, number.index).trim() : shown) || shown;
-      pair[extension.toLowerCase()].push({key, etag, title, directory, number: number?.[1], solo});
+      pair[extension.toLowerCase()].push({key, etag, title, directory: dir, folderPath: dir.slice(0, -1), number: number?.[1], solo, part});
       groups.set(identity, pair);
     }
     cursor = page.truncated ? page.cursor : undefined;
@@ -551,15 +562,16 @@ async function planImport(folder, storage) {
 
   const courses = [];
   for (const [identity, pair] of groups) {
-    if (pair.mp3.length > 1 || pair.mp4.length > 1) {
+    const parts = pair.mp4.every(file => file.part !== null) ? [...pair.mp4].sort((a, b) => a.part - b.part) : pair.mp4;
+    if (pair.mp3.length > 1 || (parts.length > 1 && parts.some(file => file.part === null))) {
       notes.push(`${identity} — נמצאו קבצים כפולים`);
       continue;
     }
     const [audio] = pair.mp3;
-    const [video] = pair.mp4;
+    const video = parts[0];
     const main = audio ?? video;
     const code = (await hash(identity)).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/, "$1-$2-$3-$4-$5");
-    courses.push({code, title: main.title, audio, video, solo: Boolean(main.solo), folder: main.key.slice(0, main.key.lastIndexOf("/"))});
+    courses.push({code, title: main.title, audio, video, videos: parts, solo: Boolean(main.solo), folder: main.folderPath ?? main.key.slice(0, main.key.lastIndexOf("/"))});
   }
   // Fuzzy pass: one MP3-only course and one MP4-only course in the same (similar) folder whose titles start the same are one lesson.
   const trails = canonicalTrails(courses);
@@ -580,6 +592,7 @@ async function planImport(folder, storage) {
       const v = uniqueCandidate(videos.filter(item => !merged.has(item)), item => compatible(a, item), item => sameTitle(a.title, item.title));
       if (!v || uniqueCandidate(audios.filter(item => !item.video), item => compatible(item, v), item => sameTitle(item.title, v.title)) !== a) continue;
       a.video = v.video;
+      a.videos = v.videos;
       merged.add(v);
     }
   }
@@ -601,11 +614,13 @@ async function planImport(folder, storage) {
       const v = uniqueCandidate(videos(), item => compatible(a, item), item => sameTitle(a.title, item.title));
       if (!v || uniqueCandidate(audios(), item => compatible(item, v), item => sameTitle(item.title, v.title)) !== a) continue;
       a.video = v.video;
+      a.videos = v.videos;
       merged.add(v);
     }
     const left = audios(), right = videos();
     if (left.length === 1 && right.length === 1 && sharesWord(left[0].title, right[0].title)) {
       left[0].video = right[0].video;
+      left[0].videos = right[0].videos;
       merged.add(right[0]);
     }
   }
@@ -1514,7 +1529,7 @@ async function deleteCourse(request, env) {
     const found = await findCourse(env, folder, course);
     if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
     const writer = await backblaze(env, true);
-    for (const file of [found.video, found.audio]) if (file) await writer.deleteFile(file.key, file.etag);
+    for (const file of [...(found.videos ?? [found.video]), found.audio]) if (file) await writer.deleteFile(file.key, file.etag);
     await env.DB.batch([
       env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course),
       env.DB.prepare("DELETE FROM catalogue WHERE folder = ? AND code = ?").bind(folder, course)
@@ -1529,17 +1544,17 @@ async function deleteCourse(request, env) {
 }
 
 function adminCourseRow(folder, course, hidden, where = "") {
-  const {code, title, audio, video} = course;
+  const {code, title, audio, video, videos} = course;
   const ids = `<input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">`;
   const visibility = `<form method="post" action="/admin/course-visibility">${ids}
     <button class="button small ${hidden ? "gold" : ""}" name="visibility" value="${hidden ? "restore" : "hide"}">${hidden ? "החזרה לספרייה" : "הסתרה מהספרייה"}</button></form>`;
   const remove = `<details class="row-menu danger-zone"><summary>מחיקה סופית</summary>
     <form method="post" action="/admin/course-delete" class="form-grid">${ids}
-      <p>הקבצים (${[audio && "MP3", video && "MP4"].filter(Boolean).join(" ו־")}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
+      <p>הקבצים (${[audio && "MP3", video && (videos?.length > 1 ? "MP4 ×" + videos.length : "MP4")].filter(Boolean).join(" ו־")}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
       <label class="check"><input type="checkbox" name="confirm" value="yes" required> אני מאשר/ת למחוק את השיעור</label>
       <button class="button small danger">מחיקת השיעור</button></form></details>`;
   return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
-    ${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}<span class="lesson-badges">${badges(audio, video)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
+    ${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}<span class="lesson-badges">${badges(audio, video, videos?.length)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
     <span class="row-actions">${visibility}</span>${remove}</li>`;
 }
 
@@ -1653,12 +1668,12 @@ async function countView(request, env, url) {
 }
 
 const videoScript = `(() => {
-  const wrap = document.querySelector(".video-wrap");
-  const video = wrap && wrap.querySelector("video");
-  if (!video) return;
   // Apple devices keep Safari's own fullscreen (the in-page version did not work well there).
   const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
   if (apple) return;
+  document.querySelectorAll(".video-wrap").forEach(wrap => {
+  const video = wrap.querySelector("video");
+  if (!video) return;
   wrap.classList.add("custom-fs");
   video.setAttribute("controlsList", "nofullscreen");
   const button = document.createElement("button");
@@ -1684,6 +1699,7 @@ const videoScript = `(() => {
   document.addEventListener("fullscreenchange", refresh);
   document.addEventListener("webkitfullscreenchange", refresh);
   document.addEventListener("keydown", event => { if (event.key === "Escape" && pseudo) leave(); });
+  });
 })();
 `;
 
@@ -1703,16 +1719,20 @@ async function cachedReader(env) {
   return readerCache.client;
 }
 
-const rowToCourse = row => ({
-  code: row.code, title: row.title, solo: Boolean(row.solo), folder: row.dir, trail: JSON.parse(row.trail),
-  audio: row.audio_key ? {key: row.audio_key, etag: row.audio_id} : undefined,
-  video: row.video_key ? {key: row.video_key, etag: row.video_id} : undefined
-});
-const COURSE_COLUMNS = "code, title, trail, solo, dir, audio_key, audio_id, video_key, video_id";
+const rowToCourse = row => {
+  const first = row.video_key ? {key: row.video_key, etag: row.video_id} : undefined;
+  const extra = row.video_extra ? JSON.parse(row.video_extra) : [];
+  return {
+    code: row.code, title: row.title, solo: Boolean(row.solo), folder: row.dir, trail: JSON.parse(row.trail),
+    audio: row.audio_key ? {key: row.audio_key, etag: row.audio_id} : undefined,
+    video: first, videos: first ? [first, ...extra.map(item => ({key: item.key, etag: item.id}))] : []
+  };
+};
+const COURSE_COLUMNS = "code, title, trail, solo, dir, audio_key, audio_id, video_key, video_id, video_extra";
 
 async function rebuildCatalogue(env, folder, storage) {
   const {courses, notes} = await planImport(folder, storage);
-  const rows = courses.map(course => [course.code, course.title, JSON.stringify(course.trail ?? []), course.solo ? 1 : 0, course.folder, course.audio?.key ?? null, course.audio?.etag ?? null, course.video?.key ?? null, course.video?.etag ?? null]);
+  const rows = courses.map(course => [course.code, course.title, JSON.stringify(course.trail ?? []), course.solo ? 1 : 0, course.folder, course.audio?.key ?? null, course.audio?.etag ?? null, course.video?.key ?? null, course.video?.etag ?? null, (course.videos?.length ?? 0) > 1 ? JSON.stringify(course.videos.slice(1).map(item => ({key: item.key, id: item.etag}))) : null]);
   const sig = await hash(JSON.stringify(rows) + JSON.stringify(notes.slice(0, 200)));
   const current = await env.DB.prepare("SELECT sig FROM catalogue_meta WHERE folder = ?").bind(folder).first();
   const value = {courses, notes};
@@ -1722,10 +1742,10 @@ async function rebuildCatalogue(env, folder, storage) {
     return value;
   }
   const gen = Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-  const group = "(?,?,?,?,?,?,?,?,?,?,?)";
+  const group = "(?,?,?,?,?,?,?,?,?,?,?,?)";
   const statements = [];
-  for (let start = 0; start < rows.length; start += 9) {
-    const part = rows.slice(start, start + 9);
+  for (let start = 0; start < rows.length; start += 8) {
+    const part = rows.slice(start, start + 8);
     statements.push(env.DB.prepare(`INSERT INTO catalogue (folder, gen, ${COURSE_COLUMNS}) VALUES ${part.map(() => group).join(",")}`).bind(...part.flatMap(row => [folder, gen, ...row])));
   }
   for (let start = 0; start < statements.length; start += 80) await env.DB.batch(statements.slice(start, start + 80));
@@ -1844,9 +1864,12 @@ async function b2Catalogue(request, env, url) {
     if (!course) return layout("השיעור לא נמצא", '<a href="/">חזרה לספרייה</a>', 404);
     if (medium) {
       const storage = await cachedReader(env);
-      const file = medium === "video" ? course.video : medium === "audio" ? course.audio : null;
+      const part = Math.max(1, Math.floor(Number(url.searchParams.get("part")) || 1));
+      const videoParts = course.videos ?? (course.video ? [course.video] : []);
+      const file = medium === "video" ? videoParts[part - 1] : medium === "audio" ? course.audio : null;
       const ext = medium === "video" ? ".mp4" : ".mp3";
-      const name = url.searchParams.has("download") ? course.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, " ").trim().slice(0, 150) + ext : "";
+      const partSuffix = medium === "video" && videoParts.length > 1 ? " חלק " + part : "";
+      const name = url.searchParams.has("download") ? (course.title + partSuffix).replace(/[\\/:*?"<>|\x00-\x1f]/g, " ").trim().slice(0, 150) + ext : "";
       if (file && medium === "audio" && name && request.method === "GET" && !request.headers.has("Range")) {
         const cover = await env.DB.prepare("SELECT data FROM site_assets WHERE name = 'cover'").first();
         if (cover) return storage.audioWithCover(file.etag, name, course.title, bytesFromBase64(cover.data));
@@ -1857,12 +1880,19 @@ async function b2Catalogue(request, env, url) {
     const link = (kind, extra = "") => esc(backblazeCourseLink(category, courseId, kind) + extra);
     const trail = courseTrail(course);
     const crumbs = `<nav class="breadcrumbs" aria-label="מיקום בספרייה">${["<a href=\"/\">הספרייה</a>", `<a href="${esc(navLink(category))}">${esc(category)}</a>`, ...trail.map((part, index) => `<a href="${esc(navLink(category, trail.slice(0, index + 1)))}">${esc(part)}</a>`)].join('<span aria-hidden="true">‹</span>')}</nav>`;
+    const logoTag = assets.has("logo") ? '<img class="video-logo" src="/brand/logo.png" alt="" aria-hidden="true">' : "";
+    const videoParts = course.videos ?? (course.video ? [course.video] : []);
+    const videoSections = videoParts.map((_, index) => {
+      const suffix = index ? "&part=" + (index + 1) : "";
+      const many = videoParts.length > 1;
+      return `<section class="player-card"><h2>צפייה בשיעור${many ? " · חלק " + (index + 1) : ""} · MP4</h2>
+          <div class="video-wrap"><video controls playsinline preload="metadata" src="${link("video", suffix)}"></video>${logoTag}</div>
+          <div class="player-actions"><a class="button" href="${link("video", suffix + "&download=1")}">הורדת MP4${many ? " (חלק " + (index + 1) + ")" : ""}</a></div></section>`;
+    }).join("");
     const seen = await env.DB.prepare("SELECT views FROM course_views WHERE folder = ? AND course_id = ?").bind(category, courseId).first();
-    return layout(course.title, `<div class="course-head"${assets.has("cover") ? " data-cover" : ""} data-folder="${esc(category)}" data-course="${esc(courseId)}">${badges(course.audio, course.video)}<span class="views" data-views>👁 ${seen?.views ?? 0} צפיות</span></div>
+    return layout(course.title, `<div class="course-head"${assets.has("cover") ? " data-cover" : ""} data-folder="${esc(category)}" data-course="${esc(courseId)}">${badges(course.audio, course.video, course.videos?.length)}<span class="views" data-views>👁 ${seen?.views ?? 0} צפיות</span></div>
       <div class="player-grid">
-        ${course.video ? `<section class="player-card"><h2>צפייה בשיעור · MP4</h2>
-          <div class="video-wrap"><video controls playsinline preload="metadata" src="${link("video")}"></video>${assets.has("logo") ? '<img class="video-logo" src="/brand/logo.png" alt="" aria-hidden="true">' : ""}</div>
-          <div class="player-actions"><a class="button" href="${link("video", "&download=1")}">הורדת MP4</a></div></section>` : ""}
+        ${videoSections}
         ${course.audio ? `<section class="player-card"><h2>האזנה לשיעור · MP3</h2>
           ${assets.has("cover") ? '<img class="cover-art" src="/brand/cover.jpg" alt="">' : ""}
           <audio controls preload="metadata" src="${link("audio")}"></audio>
@@ -1892,7 +1922,7 @@ async function b2Catalogue(request, env, url) {
   const {results: hiddenRows} = await hiddenQuery.all();
   const hidden = new Set(hiddenRows.map(row => JSON.stringify([row.folder, row.course_id])));
   const viewMap = new Map((await env.DB.prepare("SELECT folder, course_id, views FROM course_views").all()).results.map(row => [row.folder + "|" + row.course_id, row.views]));
-  const lessonRow = (folder, course, where) => `<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, course.code))}"><span class="lesson-main"><span class="lesson-title">${esc(course.title)}</span>${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}</span><span class="lesson-badges">${badges(course.audio, course.video)}${viewMap.get(folder + "|" + course.code) ? `<span class="badge muted">👁 ${viewMap.get(folder + "|" + course.code)}</span>` : ""}</span></a></li>`;
+  const lessonRow = (folder, course, where) => `<li><a class="lesson-card" href="${esc(backblazeCourseLink(folder, course.code))}"><span class="lesson-main"><span class="lesson-title">${esc(course.title)}</span>${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}</span><span class="lesson-badges">${badges(course.audio, course.video, course.videos?.length)}${viewMap.get(folder + "|" + course.code) ? `<span class="badge muted">👁 ${viewMap.get(folder + "|" + course.code)}</span>` : ""}</span></a></li>`;
   const browsing = Boolean(category) && !query;
   let rows = [];
   let subCards = "";
