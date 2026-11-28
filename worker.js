@@ -1602,7 +1602,8 @@ async function moveCourse(request, env) {
     const found = await findCourse(env, folder, course);
     if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
     writer = await backblaze(env, true);
-    if (target !== folder && !(await backblazeFolders(writer)).includes(target) && !(await accessRules(env)).has(target)) return layout("הקטגוריה לא נמצאה", notice("הקטגוריה שנבחרה אינה קיימת.", "error") + back, 400, {admin: true});
+    const reader = await backblaze(env);
+    if (target !== folder && !(await backblazeFolders(reader)).includes(target) && !(await accessRules(env)).has(target)) return layout("הקטגוריה לא נמצאה", notice("הקטגוריה שנבחרה אינה קיימת.", "error") + back, 400, {admin: true});
     const targetDir = [target, ...sub].join("/") + "/";
     const files = [...(found.videos ?? [found.video]), found.audio].filter(Boolean);
     const plan = files.map(file => {
@@ -1613,7 +1614,7 @@ async function moveCourse(request, env) {
       return {file, key: targetDir + (camera ? segments[segments.length - 2] + "/" : "") + name};
     });
     if (plan.every(item => item.key === item.file.key)) return layout("אין מה להעביר", notice("השיעור כבר נמצא ביעד הזה.", "error") + back, 400, {admin: true});
-    for (const item of plan) if (item.key !== item.file.key && await writer.exists(item.key)) return layout("לא ניתן להעביר", notice("כבר קיים קובץ באותו שם ביעד: " + item.key, "error") + back, 409, {admin: true});
+    for (const item of plan) if (item.key !== item.file.key && await reader.exists(item.key)) return layout("לא ניתן להעביר", notice("כבר קיים קובץ באותו שם ביעד: " + item.key, "error") + back, 409, {admin: true});
     for (const item of plan) {
       if (item.key === item.file.key) continue;
       const fileId = await writer.copyFile(item.file.etag, item.key);
@@ -1652,6 +1653,7 @@ async function renameCourse(request, env) {
     const found = await findCourse(env, folder, course);
     if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
     writer = await backblaze(env, true);
+    const reader = await backblaze(env);
     const files = [...(found.videos ?? [found.video]), found.audio].filter(Boolean);
     const plan = files.map(file => {
       const segments = file.key.split("/");
@@ -1663,7 +1665,7 @@ async function renameCourse(request, env) {
       return {file, key: camera ? parent + title + "/" + name : parent + title + (found.solo ? " [נפרד]" : "") + extension};
     });
     if (plan.every(item => item.key === item.file.key)) return layout("אין מה לשנות", notice("השם זהה לשם הקיים.", "error") + back, 400, {admin: true});
-    for (const item of plan) if (item.key !== item.file.key && await writer.exists(item.key)) return layout("לא ניתן לשנות שם", notice("כבר קיים קובץ בשם הזה: " + item.key, "error") + back, 409, {admin: true});
+    for (const item of plan) if (item.key !== item.file.key && await reader.exists(item.key)) return layout("לא ניתן לשנות שם", notice("כבר קיים קובץ בשם הזה: " + item.key, "error") + back, 409, {admin: true});
     for (const item of plan) {
       if (item.key === item.file.key) continue;
       created.push({key: item.key, fileId: await writer.copyFile(item.file.etag, item.key)});
