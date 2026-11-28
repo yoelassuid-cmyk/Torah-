@@ -898,7 +898,7 @@ const uploadReady = env => Boolean(env.B2_WRITE_KEY_ID && env.B2_WRITE_APPLICATI
 
 function writeStatus(error) {
   return /^(?:authorize|upload-endpoint|upload-file|delete-file|copy-file)-(?:[0-9]{3}|network|format)$/.test(error.message) || /^invalid-(?:key-id|application-key)-format$/.test(error.message)
-    ? error.message : "upload-error";
+    ? error.message : "upload-error: " + String(error?.message ?? error).replace(/[^\w .:()\/-]/g, "?").slice(0, 80);
 }
 
 async function knownCategories(env) {
