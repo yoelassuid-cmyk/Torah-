@@ -443,6 +443,8 @@ const keptApart = course => KEPT_APART.some(name => (course.video?.key ?? "").no
 function titleMatch(a, b) {
   const x = titleTokens(a), y = titleTokens(b);
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  // A title that is only the lesson number/letter (e.g. "נד") belongs to the one other title starting with it.
+  if (short.length === 1 && long.length > 1 && short[0].length >= 2 && isIndexToken(short[0]) && short[0] === long[0]) return true;
   if (!short.length || short.join("").length < 4) return false;
   if (short.every((token, index) => sameToken(token, long[index] ?? ""))) return true;
   if (!isIndexToken(short[0]) || short[0] !== long[0]) return false;
