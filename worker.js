@@ -694,6 +694,7 @@ async function admin(request, env, url) {
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
   if (route === "/admin/course-move" && request.method === "POST") return moveCourse(request, env);
+  if (route === "/admin/course-rename" && request.method === "POST") return renameCourse(request, env);
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
   return json("פעולה לא זמינה", 405);
 }
@@ -1634,6 +1635,53 @@ async function moveCourse(request, env) {
   }
 }
 
+// Rename a lesson: the title comes from the file names, so every file is copied under the new name and the originals are deleted.
+async function renameCourse(request, env) {
+  if (Number(request.headers.get("Content-Length")) > 4096) return json("בקשה גדולה מדי", 413);
+  const form = await request.formData().catch(() => null);
+  const folder = String(form?.get("folder") ?? "");
+  const course = String(form?.get("course") ?? "");
+  const title = String(form?.get("title") ?? "").replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "").replace(/\s+/g, " ").trim();
+  const back = '<p><a class="button" href="' + esc(adminHref({folder})) + '">חזרה לקטגוריה</a></p>';
+  if (!folder || folder.includes("/") || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(course)) return layout("לא ניתן לשנות שם", back, 400, {admin: true});
+  if (!title || title.length > 180 || /[\\/]/.test(title) || /^[.\d]+$/.test(title) || /\[(?:נפרד|solo)\]/i.test(title)) return layout("לא ניתן לשנות שם", notice("השם ריק, ארוך מדי, מכיל / או \\, או מורכב ממספרים בלבד.", "error") + back, 400, {admin: true});
+  if (!uploadReady(env)) return layout("לא ניתן לשנות שם", notice("שינוי שם דורש הרשאת כתיבה ל־Backblaze.", "error") + back, 503, {admin: true});
+  const created = [];
+  let writer;
+  try {
+    const found = await findCourse(env, folder, course);
+    if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
+    writer = await backblaze(env, true);
+    const files = [...(found.videos ?? [found.video]), found.audio].filter(Boolean);
+    const plan = files.map(file => {
+      const segments = file.key.split("/");
+      const name = segments[segments.length - 1];
+      const stem = name.replace(/\.[^.]+$/, "");
+      const extension = name.slice(stem.length);
+      const camera = /\.mp4$/i.test(name) && /^\d{3,6}$/.test(stem) && segments.length >= 3 && !isBatchId(segments[segments.length - 2]);
+      const parent = segments.slice(0, camera ? -2 : -1).join("/") + "/";
+      return {file, key: camera ? parent + title + "/" + name : parent + title + (found.solo ? " [נפרד]" : "") + extension};
+    });
+    if (plan.every(item => item.key === item.file.key)) return layout("אין מה לשנות", notice("השם זהה לשם הקיים.", "error") + back, 400, {admin: true});
+    for (const item of plan) if (item.key !== item.file.key && await writer.exists(item.key)) return layout("לא ניתן לשנות שם", notice("כבר קיים קובץ בשם הזה: " + item.key, "error") + back, 409, {admin: true});
+    for (const item of plan) {
+      if (item.key === item.file.key) continue;
+      created.push({key: item.key, fileId: await writer.copyFile(item.file.etag, item.key)});
+    }
+    for (const item of plan) if (item.key !== item.file.key) await writer.deleteFile(item.file.key, item.file.etag);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course),
+      env.DB.prepare("DELETE FROM catalogue WHERE folder = ? AND code = ?").bind(folder, course)
+    ]);
+    planCache.delete(folder);
+    await refreshFolder(env, folder).catch(() => {});
+    return redirect(adminHref({folder, renamed: 1}));
+  } catch (error) {
+    if (writer) for (const copy of created) await writer.deleteFile(copy.key, copy.fileId).catch(() => {});
+    return layout("שינוי השם לא הושלם", notice("שינוי השם לא הושלם, הקבצים המקוריים לא נפגעו. קוד תקלה: " + writeStatus(error), "error") + back, 502, {admin: true});
+  }
+}
+
 function adminCourseRow(folder, course, hidden, where = "", known = []) {
   const {code, title, audio, video, videos} = course;
   const ids = `<input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">`;
@@ -1644,6 +1692,11 @@ function adminCourseRow(folder, course, hidden, where = "", known = []) {
       <p>הקבצים (${[audio && "MP3", video && (videos?.length > 1 ? "MP4 ×" + videos.length : "MP4")].filter(Boolean).join(" ו־")}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
       <label class="check"><input type="checkbox" name="confirm" value="yes" required> אני מאשר/ת למחוק את השיעור</label>
       <button class="button small danger">מחיקת השיעור</button></form></details>`;
+  const rename = `<details class="row-menu"><summary>שינוי שם</summary>
+    <form method="post" action="/admin/course-rename" class="form-grid">${ids}
+      <label>שם חדש<input name="title" value="${esc(title)}" maxlength="180" required></label>
+      <p>שם הקבצים ב־Backblaze ישתנה. ההסתרה וספירת הצפיות של השיעור יתאפסו.</p>
+      <button class="button small gold">שמירת השם</button></form></details>`;
   const move = known.length ? `<details class="row-menu"><summary>שינוי קטגוריה</summary>
     <form method="post" action="/admin/course-move" class="form-grid">${ids}
       <label>קטגוריה חדשה<select name="target">${known.map(name => `<option value="${esc(name)}"${name === folder ? " selected" : ""}>${esc(name)}</option>`).join("")}</select></label>
@@ -1652,7 +1705,7 @@ function adminCourseRow(folder, course, hidden, where = "", known = []) {
       <button class="button small gold">העברת השיעור</button></form></details>` : "";
   return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
     ${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}<span class="lesson-badges">${badges(audio, video, videos?.length)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
-    <span class="row-actions">${visibility}</span>${move}${remove}</li>`;
+    <span class="row-actions">${visibility}</span>${rename}${move}${remove}</li>`;
 }
 
 const adminHref = params => "/admin?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, value]) => value !== "" && value !== undefined && value !== null)));
@@ -1677,6 +1730,7 @@ async function backblazeAdmin(env, url) {
   const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. אפשר גם להעלות MP3 בלבד או MP4 בלבד: כל קובץ בלי זוג הופך לשיעור נפרד.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
+    (url.searchParams.has("renamed") ? notice("שם השיעור עודכן.") : "") +
     (url.searchParams.has("moved") ? notice("השיעור הועבר אל: " + url.searchParams.get("moved").slice(0, 200)) : "") +
     (url.searchParams.has("saved") ? notice("הגדרות הגישה נשמרו.") : "") +
     (url.searchParams.has("refreshed") ? notice("הקטלוג עודכן.") : "") +
