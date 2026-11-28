@@ -693,6 +693,7 @@ async function admin(request, env, url) {
   if (route === "/admin/catalogue-refresh" && request.method === "POST") return refreshCatalogue(request, env);
   if (route === "/admin/category-access" && request.method === "POST") return saveCategoryAccess(request, env);
   if (route === "/admin/course-delete" && request.method === "POST") return deleteCourse(request, env);
+  if (route === "/admin/course-move" && request.method === "POST") return moveCourse(request, env);
   if (route === "/admin" && request.method === "GET") return backblazeAdmin(env, url);
   return json("פעולה לא זמינה", 405);
 }
@@ -745,6 +746,20 @@ async function backblaze(env, writing = false) {
       const status = response.status;
       await response.body?.cancel().catch(() => {});
       if (!response.ok) throw new Error("delete-file-" + status);
+    },
+    async copyFile(sourceFileId, fileName) {
+      const response = await fetch(storageApi.apiUrl + "/b2api/v4/b2_copy_file", {
+        method: "POST", headers: {Authorization: authorizationToken, "Content-Type": "application/json"},
+        body: JSON.stringify({sourceFileId, fileName}), redirect: "manual"
+      }).catch(() => { throw new Error("copy-file-network"); });
+      if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error("copy-file-" + response.status); }
+      const {fileId} = await response.json().catch(() => ({}));
+      if (!fileId) throw new Error("copy-file-format");
+      return fileId;
+    },
+    async exists(fileName) {
+      const page = await this.list({prefix: fileName});
+      return page.objects.some(item => item.key === fileName && item.action !== "folder");
     },
     async uploadTarget() {
       const {uploadUrl, authorizationToken: token} = await getUploadEndpoint();
@@ -881,7 +896,7 @@ const courseUploadLimit = 30 * 1024 * 1024;
 const uploadReady = env => Boolean(env.B2_WRITE_KEY_ID && env.B2_WRITE_APPLICATION_KEY);
 
 function writeStatus(error) {
-  return /^(?:authorize|upload-endpoint|upload-file|delete-file)-(?:[0-9]{3}|network|format)$/.test(error.message) || /^invalid-(?:key-id|application-key)-format$/.test(error.message)
+  return /^(?:authorize|upload-endpoint|upload-file|delete-file|copy-file)-(?:[0-9]{3}|network|format)$/.test(error.message) || /^invalid-(?:key-id|application-key)-format$/.test(error.message)
     ? error.message : "upload-error";
 }
 
@@ -1567,7 +1582,59 @@ async function deleteCourse(request, env) {
   }
 }
 
-function adminCourseRow(folder, course, hidden, where = "") {
+// Move a lesson to another category / sub-folder: copy every file inside Backblaze, check, then delete the originals.
+async function moveCourse(request, env) {
+  if (Number(request.headers.get("Content-Length")) > 4096) return json("בקשה גדולה מדי", 413);
+  const form = await request.formData().catch(() => null);
+  const folder = String(form?.get("folder") ?? "");
+  const course = String(form?.get("course") ?? "");
+  const target = String(form?.get("target") ?? "").trim();
+  const sub = parsePath(form?.get("sub"));
+  if (!folder || folder.includes("/") || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(course) || !target || target.includes("/") || target.length > 200) {
+    return layout("לא ניתן להעביר", '<a href="/admin">חזרה לניהול</a>', 400, {admin: true});
+  }
+  const back = '<p><a class="button" href="' + esc(adminHref({folder})) + '">חזרה לקטגוריה</a></p>';
+  if (!uploadReady(env)) return layout("לא ניתן להעביר", notice("העברה דורשת הרשאת כתיבה ל־Backblaze.", "error") + back, 503, {admin: true});
+  const created = [];
+  let writer;
+  try {
+    const found = await findCourse(env, folder, course);
+    if (!found) return layout("השיעור לא נמצא", back, 404, {admin: true});
+    writer = await backblaze(env, true);
+    if (target !== folder && !(await backblazeFolders(writer)).includes(target) && !(await accessRules(env)).has(target)) return layout("הקטגוריה לא נמצאה", notice("הקטגוריה שנבחרה אינה קיימת.", "error") + back, 400, {admin: true});
+    const targetDir = [target, ...sub].join("/") + "/";
+    const files = [...(found.videos ?? [found.video]), found.audio].filter(Boolean);
+    const plan = files.map(file => {
+      const segments = file.key.split("/");
+      const name = segments[segments.length - 1];
+      const stem = name.replace(/\.[^.]+$/, "");
+      const camera = /\.mp4$/i.test(name) && /^\d{3,6}$/.test(stem) && segments.length >= 3 && !isBatchId(segments[segments.length - 2]);
+      return {file, key: targetDir + (camera ? segments[segments.length - 2] + "/" : "") + name};
+    });
+    if (plan.every(item => item.key === item.file.key)) return layout("אין מה להעביר", notice("השיעור כבר נמצא ביעד הזה.", "error") + back, 400, {admin: true});
+    for (const item of plan) if (item.key !== item.file.key && await writer.exists(item.key)) return layout("לא ניתן להעביר", notice("כבר קיים קובץ באותו שם ביעד: " + item.key, "error") + back, 409, {admin: true});
+    for (const item of plan) {
+      if (item.key === item.file.key) continue;
+      const fileId = await writer.copyFile(item.file.etag, item.key);
+      created.push({key: item.key, fileId});
+    }
+    for (const item of plan) if (item.key !== item.file.key) await writer.deleteFile(item.file.key, item.file.etag);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM backblaze_hidden_courses WHERE folder = ? AND course_id = ?").bind(folder, course),
+      env.DB.prepare("DELETE FROM catalogue WHERE folder = ? AND code = ?").bind(folder, course)
+    ]);
+    planCache.delete(folder); planCache.delete(target);
+    await refreshFolder(env, folder).catch(() => {});
+    if (target !== folder) await refreshFolder(env, target).catch(() => {});
+    return redirect(adminHref({folder, moved: target}));
+  } catch (error) {
+    // Nothing was deleted yet unless the failure happened during the last step: remove only the copies made here.
+    if (writer) for (const copy of created) await writer.deleteFile(copy.key, copy.fileId).catch(() => {});
+    return layout("ההעברה לא הושלמה", notice("ההעברה לא הושלמה, הקבצים המקוריים לא נפגעו. קוד תקלה: " + writeStatus(error), "error") + back, 502, {admin: true});
+  }
+}
+
+function adminCourseRow(folder, course, hidden, where = "", known = []) {
   const {code, title, audio, video, videos} = course;
   const ids = `<input type="hidden" name="folder" value="${esc(folder)}"><input type="hidden" name="course" value="${esc(code)}">`;
   const visibility = `<form method="post" action="/admin/course-visibility">${ids}
@@ -1577,9 +1644,15 @@ function adminCourseRow(folder, course, hidden, where = "") {
       <p>הקבצים (${[audio && "MP3", video && (videos?.length > 1 ? "MP4 ×" + videos.length : "MP4")].filter(Boolean).join(" ו־")}) יימחקו לצמיתות מ־Backblaze. אי אפשר לשחזר.</p>
       <label class="check"><input type="checkbox" name="confirm" value="yes" required> אני מאשר/ת למחוק את השיעור</label>
       <button class="button small danger">מחיקת השיעור</button></form></details>`;
+  const move = known.length ? `<details class="row-menu"><summary>שינוי קטגוריה</summary>
+    <form method="post" action="/admin/course-move" class="form-grid">${ids}
+      <label>קטגוריה חדשה<select name="target">${known.map(name => `<option value="${esc(name)}"${name === folder ? " selected" : ""}>${esc(name)}</option>`).join("")}</select></label>
+      <label>תיקיית משנה (אופציונלי, למשל: אורח חיים)<input name="sub" maxlength="200"></label>
+      <p>הקבצים יועברו בתוך Backblaze אל היעד. ההסתרה וספירת הצפיות של השיעור יתאפסו.</p>
+      <button class="button small gold">העברת השיעור</button></form></details>` : "";
   return `<li class="lesson-card admin-row"><span class="lesson-main"><span class="lesson-title">${hidden ? esc(title) : `<a href="${esc(backblazeCourseLink(folder, code))}">${esc(title)}</a>`}</span>
     ${where ? `<span class="lesson-meta">${esc(where)}</span>` : ""}<span class="lesson-badges">${badges(audio, video, videos?.length)}${hidden ? '<span class="badge muted">מוסתר</span>' : ""}</span></span>
-    <span class="row-actions">${visibility}</span>${remove}</li>`;
+    <span class="row-actions">${visibility}</span>${move}${remove}</li>`;
 }
 
 const adminHref = params => "/admin?" + new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, value]) => value !== "" && value !== undefined && value !== null)));
@@ -1604,6 +1677,7 @@ async function backblazeAdmin(env, url) {
   const howTo = '<details class="help"><summary>איך מוסיפים שיעורים?</summary><ol><li>בכל קטגוריה יש תיקייה ב־Backblaze.</li><li>מעלים את ה־MP3 וה־MP4 לאותה תיקייה, עם <b>אותו שם</b> לפני הסיומת.</li><li>השיעור מופיע כאן ובאתר אוטומטית. אפשר גם להעלות MP3 בלבד או MP4 בלבד: כל קובץ בלי זוג הופך לשיעור נפרד.</li><li>״הסתרה״ מוריד את השיעור מהאתר אך שומר את הקבצים, ואפשר להחזיר אותו. ״מחיקה סופית״ מוחקת את הקבצים מ־Backblaze.</li></ol></details>';
   const flash = (url.searchParams.has("published") ? notice("השיעור פורסם בהצלחה.") : "") +
     (url.searchParams.has("deleted") ? notice("השיעור נמחק.") : "") +
+    (url.searchParams.has("moved") ? notice("השיעור הועבר אל: " + url.searchParams.get("moved").slice(0, 200)) : "") +
     (url.searchParams.has("saved") ? notice("הגדרות הגישה נשמרו.") : "") +
     (url.searchParams.has("refreshed") ? notice("הקטלוג עודכן.") : "") +
     ({hide: notice("השיעור הוסתר מהספרייה."), restore: notice("השיעור הוחזר לספרייה.")}[url.searchParams.get("visibility")] ?? "");
@@ -1651,8 +1725,8 @@ async function backblazeAdmin(env, url) {
       <form method="get" action="/admin" class="searchbar"><input type="hidden" name="folder" value="${esc(current)}">${path.length ? `<input type="hidden" name="path" value="${esc(path.join("/"))}">` : ""}${only ? `<input type="hidden" name="only" value="${only}">` : ""}<label>חיפוש בקטגוריה<input type="search" name="q" value="${esc(q)}" maxlength="120" placeholder="שם השיעור"></label><button class="button gold">חיפוש</button></form>
       <div class="filters">${chip("הכול", {q}, !only)}${chip(`MP3 בלבד (${mp3Only})`, {q, only: "mp3"}, only === "mp3")}${chip(`MP4 בלבד (${mp4Only})`, {q, only: "mp4"}, only === "mp4")}</div>
       ${browsing && level.subs.length ? `<h2 style="margin-block-start:8px">תיקיות</h2><ul class="folder-grid" style="margin-block-end:22px">${level.subs.map(([name, count]) => `<li><a class="folder-card" href="${esc(adminHref({folder: current, path: [...path, name].join("/")}))}">${folderIcon}<span class="folder-name">${esc(name)}</span><span class="badge muted">${count}</span><span class="folder-arrow" aria-hidden="true">‹</span></a></li>`).join("")}</ul>` : ""}
-      ${shown.length ? `<ul class="lesson-list">${shown.slice((page - 1) * perPage, page * perPage).map(course => adminCourseRow(current, course, false, browsing ? "" : courseTrail(course).join(" › "))).join("")}</ul>${pager}` : (browsing && level.subs.length ? "" : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>')}
-      ${hidden.length ? `<details class="help"><summary>שיעורים מוסתרים (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true)).join("")}</ul></details>` : ""}
+      ${shown.length ? `<ul class="lesson-list">${shown.slice((page - 1) * perPage, page * perPage).map(course => adminCourseRow(current, course, false, browsing ? "" : courseTrail(course).join(" › "), known)).join("")}</ul>${pager}` : (browsing && level.subs.length ? "" : '<div class="panel empty-state"><p>לא נמצאו שיעורים.</p></div>')}
+      ${hidden.length ? `<details class="help"><summary>שיעורים מוסתרים (${hidden.length})</summary><ul class="lesson-list" style="margin-block-start:12px">${hidden.map(course => adminCourseRow(current, course, true, "", known)).join("")}</ul></details>` : ""}
       ${notes.length ? `<details class="help"><summary>קבצים לבדיקה (${notes.length})</summary><ul>${notes.map(note => `<li>${esc(note)}</li>`).join("")}</ul></details>` : ""}` + howTo, 200, {admin: true, before: `<nav class="breadcrumbs" aria-label="מיקום">${['<a href="/admin">ניהול</a>', path.length ? `<a href="${esc(adminHref({folder: current}))}">${esc(current)}</a>` : `<span>${esc(current)}</span>`, ...path.map((part, index) => index === path.length - 1 ? `<span>${esc(part)}</span>` : `<a href="${esc(adminHref({folder: current, path: path.slice(0, index + 1).join("/")}))}">${esc(part)}</a>`)].join('<span aria-hidden="true">‹</span>')}</nav>`});
   } catch {
     return layout("ניהול הספרייה", actions + notice("לא ניתן לטעון את Backblaze כרגע. נסו שוב בעוד רגע.", "error") + '<p><a class="button" href="/admin">ניסיון נוסף</a></p>' + howTo, 502, {admin: true});
