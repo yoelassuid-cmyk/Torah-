@@ -749,14 +749,25 @@ async function backblaze(env, writing = false) {
       if (!response.ok) throw new Error("delete-file-" + status);
     },
     async copyFile(sourceFileId, fileName) {
-      const response = await fetch(storageApi.apiUrl + "/b2api/v4/b2_copy_file", {
-        method: "POST", headers: {Authorization: authorizationToken, "Content-Type": "application/json"},
-        body: JSON.stringify({sourceFileId, fileName}), redirect: "manual"
-      }).catch(() => { throw new Error("copy-file-network"); });
-      if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error("copy-file-" + response.status); }
-      const {fileId} = await response.json().catch(() => ({}));
-      if (!fileId) throw new Error("copy-file-format");
-      return fileId;
+      // Backblaze answers 429 / 503 when it is busy: wait (Retry-After) and try again.
+      for (let attempt = 0; ; attempt++) {
+        const response = await fetch(storageApi.apiUrl + "/b2api/v4/b2_copy_file", {
+          method: "POST", headers: {Authorization: authorizationToken, "Content-Type": "application/json"},
+          body: JSON.stringify({sourceFileId, fileName}), redirect: "manual"
+        }).catch(() => { throw new Error("copy-file-network"); });
+        if (response.ok) {
+          const {fileId} = await response.json().catch(() => ({}));
+          if (!fileId) throw new Error("copy-file-format");
+          return fileId;
+        }
+        await response.body?.cancel().catch(() => {});
+        if ((response.status === 429 || response.status === 503) && attempt < 5) {
+          const wait = Math.min(15, Number(response.headers.get("Retry-After")) || 2 ** attempt);
+          await new Promise(resolve => setTimeout(resolve, wait * 1000));
+          continue;
+        }
+        throw new Error("copy-file-" + response.status);
+      }
     },
     async exists(fileName) {
       const page = await this.list({prefix: fileName});
