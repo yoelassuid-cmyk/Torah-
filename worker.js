@@ -436,6 +436,10 @@ const isIndexToken = token => token.length <= 3 && /^(?:[\u05d0-\u05ea]{1,3}|\d{
 //  - the shorter one is the beginning of the longer one (token by token), or
 //  - both start with the same lesson number/letter (e.g. "ה") and the other words match: the shorter
 //    ones appear in order inside the longer, or at least 60% of the words are shared.
+// Video folders the owner asked never to be attached to an MP3 automatically (wrong matches).
+const KEPT_APART = ["כ המשך דברים שבכתב סימן נ", "יט שוע סימן נ דברים שבכתב"];
+const keptApart = course => KEPT_APART.some(name => (course.video?.key ?? "").normalize("NFC").includes(name));
+
 function titleMatch(a, b) {
   const x = titleTokens(a), y = titleTokens(b);
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
@@ -583,7 +587,7 @@ async function planImport(folder, storage) {
     buckets.set(key, [...(buckets.get(key) ?? []), course]);
   }
   const merged = new Set();
-  const compatible = (a, v) => !(a.audio.number && v.video.number && a.audio.number !== v.video.number) && titleMatch(a.title, v.title);
+  const compatible = (a, v) => !keptApart(v) && !(a.audio.number && v.video.number && a.audio.number !== v.video.number) && titleMatch(a.title, v.title);
   for (const list of buckets.values()) {
     const audios = list.filter(course => course.audio);
     const videos = list.filter(course => course.video);
@@ -618,7 +622,7 @@ async function planImport(folder, storage) {
       merged.add(v);
     }
     const left = audios(), right = videos();
-    if (left.length === 1 && right.length === 1 && sharesWord(left[0].title, right[0].title)) {
+    if (left.length === 1 && right.length === 1 && !keptApart(right[0]) && sharesWord(left[0].title, right[0].title)) {
       left[0].video = right[0].video;
       left[0].videos = right[0].videos;
       merged.add(right[0]);
