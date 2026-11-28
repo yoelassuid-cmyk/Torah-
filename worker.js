@@ -761,8 +761,8 @@ async function backblaze(env, writing = false) {
           return fileId;
         }
         await response.body?.cancel().catch(() => {});
-        if ((response.status === 429 || response.status === 503) && attempt < 5) {
-          const wait = Math.min(15, Number(response.headers.get("Retry-After")) || 2 ** attempt);
+        if ((response.status === 429 || response.status === 503) && attempt < 2) {
+          const wait = Math.min(5, Number(response.headers.get("Retry-After")) || 2 ** attempt);
           await new Promise(resolve => setTimeout(resolve, wait * 1000));
           continue;
         }
@@ -907,6 +907,7 @@ function backblazeCourseLink(folder, course, file) {
 const courseUploadLimit = 30 * 1024 * 1024;
 const uploadReady = env => Boolean(env.B2_WRITE_KEY_ID && env.B2_WRITE_APPLICATION_KEY);
 
+const busyHint = error => /-429$/.test(error?.message ?? "") ? " Backblaze מגביל זמנית את החשבון (יותר מדי בקשות). נסו שוב בעוד כמה דקות, ועצרו העלאות פעילות (rclone) בינתיים." : "";
 function writeStatus(error) {
   return /^(?:authorize|upload-endpoint|upload-file|delete-file|copy-file)-(?:[0-9]{3}|network|format)$/.test(error.message) || /^invalid-(?:key-id|application-key)-format$/.test(error.message)
     ? error.message : "upload-error: " + String(error?.message ?? error).replace(/[^\w .:()\/-]/g, "?").slice(0, 80);
@@ -1643,7 +1644,7 @@ async function moveCourse(request, env) {
   } catch (error) {
     // Nothing was deleted yet unless the failure happened during the last step: remove only the copies made here.
     if (writer) for (const copy of created) await writer.deleteFile(copy.key, copy.fileId).catch(() => {});
-    return layout("ההעברה לא הושלמה", notice("ההעברה לא הושלמה, הקבצים המקוריים לא נפגעו. קוד תקלה: " + writeStatus(error), "error") + back, 502, {admin: true});
+    return layout("ההעברה לא הושלמה", notice("ההעברה לא הושלמה, הקבצים המקוריים לא נפגעו. קוד תקלה: " + writeStatus(error) + busyHint(error), "error") + back, 502, {admin: true});
   }
 }
 
@@ -1691,7 +1692,7 @@ async function renameCourse(request, env) {
     return redirect(adminHref({folder, renamed: 1}));
   } catch (error) {
     if (writer) for (const copy of created) await writer.deleteFile(copy.key, copy.fileId).catch(() => {});
-    return layout("שינוי השם לא הושלם", notice("שינוי השם לא הושלם, הקבצים המקוריים לא נפגעו. קוד תקלה: " + writeStatus(error), "error") + back, 502, {admin: true});
+    return layout("שינוי השם לא הושלם", notice("שינוי השם לא הושלם, הקבצים המקוריים לא נפגעו. קוד תקלה: " + writeStatus(error) + busyHint(error), "error") + back, 502, {admin: true});
   }
 }
 
