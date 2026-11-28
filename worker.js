@@ -656,7 +656,7 @@ async function planImport(folder, storage) {
     notes.push(`${(course.audio ?? course.video).key} — אותו קוד מופיע ביותר מתיקייה אחת`);
     return false;
   });
-  valid.sort((a, b) => (a.audio ?? a.video).key.localeCompare((b.audio ?? b.video).key));
+  valid.sort(byKey);
   return {courses: valid, notes, stamp: await hash(JSON.stringify(valid))};
 }
 
@@ -902,7 +902,7 @@ function levelView(courses, path) {
     if (trail.length === path.length) inside.push(course);
     else subs.set(trail[path.length], (subs.get(trail[path.length]) ?? 0) + 1);
   }
-  return {inside, subs: [...subs].sort((a, b) => a[0].localeCompare(b[0], "he"))};
+  return {inside, subs: [...subs].sort((a, b) => naturalCompare(a[0], b[0]))};
 }
 
 function backblazeCourseLink(folder, course, file) {
@@ -1045,7 +1045,7 @@ async function listSubfolders(env, url) {
       for (const item of page.objects) if (item.action === "folder") { const name = item.key.slice(prefix.length, -1); if (name && !isBatchId(name)) names.add(name); }
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
-    return Response.json({folders: [...names].sort((a, b) => a.localeCompare(b, "he"))}, {headers: security});
+    return Response.json({folders: [...names].sort(naturalCompare)}, {headers: security});
   } catch { return json("לא ניתן לטעון תיקיות", 502); }
 }
 
@@ -1206,7 +1206,7 @@ const uploadMultiScript = `(() => {
       }
       courses.push(course);
     }
-    courses.sort((a, b) => a.title.localeCompare(b.title, "he"));
+    courses.sort((a, b) => naturalCompare(a.title, b.title));
     lastIgnored = ignored.length;
   }
 
@@ -1939,7 +1939,18 @@ const folderCache = {at: 0, list: []};
 let currentCtx = null;
 const clearCaches = () => { readerCache.client = null; planCache.clear(); folderCache.at = 0; };
 const background = promise => { try { currentCtx?.waitUntil(promise.catch(() => {})); } catch {} };
-const byKey = (a, b) => (a.audio ?? a.video).key.localeCompare((b.audio ?? b.video).key);
+// Natural ordering: numbers compare as numbers (3 before 22) and the Hebrew numerals 15 and 16 (טו / טז) sort as יה / יו.
+const naturalCollator = new Intl.Collator("he", {numeric: true});
+const sortText = text => String(text).normalize("NFC")
+  .replace(/(^|[\s\-])ט["'\u05f4\u05f3]*ו(?=$|[\s\-,.:])/g, "$1יה")
+  .replace(/(^|[\s\-])ט["'\u05f4\u05f3]*ז(?=$|[\s\-,.:])/g, "$1יו");
+const naturalCompare = (a, b) => naturalCollator.compare(sortText(a), sortText(b));
+const keyCompare = (a, b) => {
+  const x = a.split("/"), y = b.split("/");
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return naturalCompare(x[i], y[i]);
+  return x.length - y.length;
+};
+const byKey = (a, b) => keyCompare((a.audio ?? a.video).key, (b.audio ?? b.video).key);
 const agoText = ms => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "הרגע" : m < 60 ? `לפני ${m} דקות` : m < 1440 ? `לפני ${Math.round(m / 60)} שעות` : `לפני ${Math.round(m / 1440)} ימים`; };
 
 async function cachedReader(env) {
